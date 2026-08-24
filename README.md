@@ -62,12 +62,14 @@ The previous interface remains available at **http://localhost:8899/legacy**.
 
 Metadata fetching uses bounded worker pools for independent URLs, playlist roots,
 and direct-media probes. Successful metadata is cached briefly, and simultaneous
-requests for the same URL share one extraction. These settings are separate from
-the download concurrency selected in the UI:
+requests for the same URL share one extraction. Fetch concurrency can be changed
+from the Fetch button; active batches can also be paused/resumed or stopped from
+the fetched-items header. These controls are separate from download concurrency:
 
 | Variable | Default | Purpose |
 |---|---:|---|
-| `RECLIP_FETCH_WORKERS` | `6` | Concurrent per-URL metadata extractions (1–16) |
+| `RECLIP_FETCH_WORKERS` | `6` | Initial concurrent per-URL metadata extractions |
+| `RECLIP_FETCH_MAX_WORKERS` | `16` | Runtime fetch-concurrency ceiling (1–32) |
 | `RECLIP_FETCH_EXPAND_WORKERS` | `4` | Concurrent playlist/provider root expansions (1–8) |
 | `RECLIP_FETCH_PROBE_WORKERS` | `8` | Global direct-media probe limit (1–32) |
 | `RECLIP_FETCH_PROBE_WINDOW` | `4` | Speculative ordered probes per fetched page |

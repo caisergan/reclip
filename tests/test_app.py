@@ -97,6 +97,14 @@ class ReClipApiTests(unittest.TestCase):
         self.assertIn(b'id="megaOverlay"', root.data)
         self.assertIn(b'id="librarySelectAllBtn"', root.data)
         self.assertIn(b'id="splitFetch"', root.data)
+        self.assertIn(b'id="fetchProgress"', root.data)
+        self.assertIn(b'id="selectAllBtn"', root.data)
+        self.assertIn(b'id="pauseFetchBtn"', root.data)
+        self.assertIn(b'id="stopFetchBtn"', root.data)
+        self.assertIn(b'id="fetchConcSel"', root.data)
+        self.assertIn(b"toggleCardSelection", root.data)
+        self.assertNotIn(b'class="card-check"', root.data)
+        self.assertNotIn(b'id="selectAll"', root.data)
         self.assertIn(b'id="libraryMoveBtn"', root.data)
 
         legacy = self.client.get("/legacy")
@@ -148,6 +156,126 @@ class ReClipApiTests(unittest.TestCase):
         self.assertEqual(state["urls"][0]["status"], "done")
         self.assertEqual(state["urls"][0]["title"], "Controlled fetch")
         self.assertEqual(state["urls"][0]["formats"][0]["id"], "1080")
+
+    def test_fetch_batch_pause_holds_queued_items_until_resume(self):
+        original_limit = reclip.fetch_gate.limit
+        entered = threading.Event()
+        release = threading.Event()
+        calls = 0
+        calls_lock = threading.Lock()
+
+        def fake_info(url):
+            nonlocal calls
+            with calls_lock:
+                calls += 1
+                call_number = calls
+            if call_number == 1:
+                entered.set()
+                self.assertTrue(release.wait(3))
+            return {
+                "title": url, "thumbnail": "", "duration": None,
+                "uploader": "Tests", "formats": [], "id": url,
+                "extractor": "test", "already_on_server": False,
+                "existing_file": "",
+            }
+
+        batch_id = None
+        reclip.fetch_gate.set_limit(1)
+        try:
+            with patch.object(reclip, "fetch_video_info", side_effect=fake_info):
+                started = self.client.post("/api/fetch", json={
+                    "urls": [f"https://example.test/pause-{index}" for index in range(3)],
+                    "mode": "video", "fetch_concurrent": 1,
+                })
+                batch_id = started.get_json()["batch_id"]
+                self.assertTrue(entered.wait(2))
+
+                paused = self.client.post(
+                    f"/api/fetch/{batch_id}/pause", json={"paused": True}
+                ).get_json()
+                self.assertTrue(paused["paused"])
+                self.assertNotIn("_futures", paused)
+
+                release.set()
+                deadline = time.time() + 2
+                while time.time() < deadline:
+                    paused = self.client.get(f"/api/fetch/{batch_id}").get_json()
+                    if sum(item["status"] == "done" for item in paused["urls"]) == 1:
+                        break
+                    time.sleep(0.01)
+                time.sleep(0.05)
+                paused = self.client.get(f"/api/fetch/{batch_id}").get_json()
+                self.assertFalse(paused["finished"])
+                self.assertEqual(calls, 1)
+                self.assertEqual(
+                    [item["status"] for item in paused["urls"]].count("loading"), 2
+                )
+
+                resumed = self.client.post(
+                    f"/api/fetch/{batch_id}/pause", json={"paused": False}
+                ).get_json()
+                self.assertFalse(resumed["paused"])
+                finished = self.wait_for_fetch(batch_id)
+                self.assertTrue(all(item["status"] == "done" for item in finished["urls"]))
+                self.assertEqual(calls, 3)
+        finally:
+            release.set()
+            if batch_id:
+                self.client.post(f"/api/fetch/{batch_id}/pause", json={"paused": False})
+            reclip.fetch_gate.set_limit(original_limit)
+            reclip.fetch_gate.wake_all()
+
+    def test_stop_fetch_batch_cancels_unfinished_items_immediately(self):
+        original_limit = reclip.fetch_gate.limit
+        entered = threading.Event()
+        release = threading.Event()
+
+        def fake_info(url):
+            entered.set()
+            self.assertTrue(release.wait(3))
+            return {
+                "title": url, "thumbnail": "", "duration": None,
+                "uploader": "Tests", "formats": [], "id": url,
+                "extractor": "test", "already_on_server": False,
+                "existing_file": "",
+            }
+
+        batch_id = None
+        reclip.fetch_gate.set_limit(1)
+        try:
+            with patch.object(reclip, "fetch_video_info", side_effect=fake_info):
+                started = self.client.post("/api/fetch", json={
+                    "urls": [f"https://example.test/stop-{index}" for index in range(3)],
+                    "mode": "video", "fetch_concurrent": 1,
+                })
+                batch_id = started.get_json()["batch_id"]
+                self.assertTrue(entered.wait(2))
+
+                stopped = self.client.post(
+                    f"/api/fetch/{batch_id}/stop"
+                ).get_json()
+                self.assertTrue(stopped["finished"])
+                self.assertTrue(stopped["stopped"])
+                self.assertFalse(stopped["paused"])
+                self.assertTrue(all(
+                    item["status"] == "cancelled" for item in stopped["urls"]
+                ))
+                self.assertNotIn(
+                    batch_id, self.client.get("/api/fetch/list").get_json()["batches"]
+                )
+
+                release.set()
+                deadline = time.time() + 2
+                while time.time() < deadline and reclip.fetch_gate.active:
+                    time.sleep(0.01)
+                final = self.client.get(f"/api/fetch/{batch_id}").get_json()
+                self.assertTrue(all(
+                    item["status"] == "cancelled" for item in final["urls"]
+                ))
+        finally:
+            release.set()
+            reclip.fetch_gate.set_limit(original_limit)
+            reclip.fetch_gate.wake_all()
 
     def test_fetch_info_coalesces_duplicates_caches_and_refreshes_library_state(self):
         url = "https://example.test/cache-target"
@@ -763,13 +891,21 @@ class ReClipApiTests(unittest.TestCase):
 
     def test_config_endpoint_updates_concurrency(self):
         original = reclip.gate.limit
+        original_fetch = reclip.fetch_gate.limit
         try:
-            response = self.client.post("/api/config", json={"max_concurrent": 4})
+            response = self.client.post(
+                "/api/config", json={"max_concurrent": 4, "fetch_concurrent": 8}
+            )
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.get_json()["max_concurrent"], 4)
-            self.assertEqual(self.client.get("/api/config").get_json()["max_concurrent"], 4)
+            self.assertEqual(response.get_json()["fetch_concurrent"], 8)
+            config = self.client.get("/api/config").get_json()
+            self.assertEqual(config["max_concurrent"], 4)
+            self.assertEqual(config["fetch_concurrent"], 8)
+            self.assertEqual(config["fetch_max_pool"], reclip.FETCH_MAX_WORKERS)
         finally:
             reclip.gate.set_limit(original)
+            reclip.fetch_gate.set_limit(original_fetch)
 
 
 if __name__ == "__main__":

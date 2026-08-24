@@ -57,7 +57,10 @@ def _bounded_env_float(name, default, minimum, maximum):
 # bounded so large batches gain parallelism without creating unbounded curl or
 # yt-dlp subprocesses. Expansion has its own pool because /api/fetch waits for
 # playlist roots; probe work is shared globally by all resolver/scrape jobs.
-FETCH_WORKERS = _bounded_env_int("RECLIP_FETCH_WORKERS", 6, 1, 16)
+FETCH_MAX_WORKERS = _bounded_env_int("RECLIP_FETCH_MAX_WORKERS", 16, 1, 32)
+FETCH_WORKERS = _bounded_env_int(
+    "RECLIP_FETCH_WORKERS", 6, 1, FETCH_MAX_WORKERS
+)
 FETCH_EXPAND_WORKERS = _bounded_env_int(
     "RECLIP_FETCH_EXPAND_WORKERS", min(4, FETCH_WORKERS), 1, 8
 )
@@ -73,7 +76,7 @@ FETCH_INFO_CACHE_SIZE = _bounded_env_int(
 )
 
 _fetch_executor = ThreadPoolExecutor(
-    max_workers=FETCH_WORKERS, thread_name_prefix="fetch-info"
+    max_workers=FETCH_MAX_WORKERS, thread_name_prefix="fetch-info"
 )
 _fetch_expand_executor = ThreadPoolExecutor(
     max_workers=FETCH_EXPAND_WORKERS, thread_name_prefix="fetch-expand"
@@ -135,7 +138,57 @@ class DownloadGate:
             self._cond.notify_all()
 
 
+class FetchGate:
+    """Resizable scheduler for pausable, stoppable metadata batches."""
+
+    def __init__(self, limit, ceiling):
+        self._cond = threading.Condition()
+        self._active = 0
+        self._ceiling = ceiling
+        self._limit = max(1, min(int(limit), ceiling))
+
+    @property
+    def limit(self):
+        with self._cond:
+            return self._limit
+
+    @property
+    def active(self):
+        with self._cond:
+            return self._active
+
+    def acquire(self, batch_id):
+        """Wait for global capacity and this batch's pause flag."""
+        with self._cond:
+            while True:
+                with fetch_lock:
+                    batch = fetch_batches.get(batch_id)
+                    if not batch or batch.get("stopped") or batch.get("finished"):
+                        return False
+                    paused = bool(batch.get("paused"))
+                if not paused and self._active < self._limit:
+                    self._active += 1
+                    return True
+                self._cond.wait()
+
+    def release(self):
+        with self._cond:
+            self._active = max(0, self._active - 1)
+            self._cond.notify_all()
+
+    def set_limit(self, value):
+        with self._cond:
+            self._limit = max(1, min(int(value), self._ceiling))
+            self._cond.notify_all()
+            return self._limit
+
+    def wake_all(self):
+        with self._cond:
+            self._cond.notify_all()
+
+
 gate = DownloadGate(os.environ.get("RECLIP_MAX_CONCURRENT", "3"), MAX_POOL)
+fetch_gate = FetchGate(FETCH_WORKERS, FETCH_MAX_WORKERS)
 
 # Cap how many finished job records we keep in memory (the file itself stays on
 # disk). Prevents the in-memory dict from growing without bound on a
@@ -2572,9 +2625,12 @@ def _restore_fetch_batches():
                 "id": rid,
                 "urls": items,
                 "finished": False,
+                "paused": False,
+                "stopped": False,
                 "created_at": created_at or time.time(),
                 "kind": "video",
                 "_pending": len(items),
+                "_futures": [],
             }
             fetch_batches[rid] = batch
             restored.append(batch)
@@ -2593,8 +2649,11 @@ def _restore_fetch_batches():
             pass
 
     for batch in restored:
-        for target in list(batch["urls"]):
-            _fetch_executor.submit(_process_fetch_url, batch["id"], target)
+        with fetch_lock:
+            for target in list(batch["urls"]):
+                batch["_futures"].append(
+                    _fetch_executor.submit(_process_fetch_url, batch["id"], target)
+                )
 
 
 def _start_fetch_batch(urls, kind="video"):
@@ -2613,8 +2672,11 @@ def _start_fetch_batch(urls, kind="video"):
             "kind": kind,
             "urls": items,
             "finished": not expanded,
+            "paused": False,
+            "stopped": False,
             "created_at": time.time(),
             "_pending": len(items),
+            "_futures": [],
         }
         fetch_batches[batch_id] = batch
         targets = list(batch["urls"])
@@ -2622,8 +2684,13 @@ def _start_fetch_batch(urls, kind="video"):
     # SQLite must never hold fetch_lock: polls and other workers should not wait
     # behind JSON serialization or disk I/O.
     _persist_fetch_batch(snapshot)
-    for target in targets:
-        _fetch_executor.submit(_process_fetch_url, batch_id, target)
+    with fetch_lock:
+        live = fetch_batches.get(batch_id)
+        if live:
+            for target in targets:
+                live["_futures"].append(
+                    _fetch_executor.submit(_process_fetch_url, batch_id, target)
+                )
     return batch_id
 
 
@@ -2676,21 +2743,41 @@ def _scrape_page(url, max_links=50, max_probe=24, iframe_depth=3):
     return kept
 
 
-def _complete_fetch_item(batch_id, target, *, info=None, error=None, replacements=None):
-    """Atomically finish a stable batch item and persist only final state.
+def _begin_fetch_finalization_locked(batch):
+    """Claim the one final persistence write when no work remains."""
+    if (int(batch.get("_pending", 0)) > 0 or batch.get("finished")
+            or batch.get("_finalizing")):
+        return None
+    batch["_finalizing"] = True
+    snapshot = _fetch_batch_snapshot(batch)
+    snapshot["finished"] = True
+    return snapshot
 
-    Scrape workers can replace one root with many result cards, shifting list
-    positions while sibling workers are still running. Matching by object
-    identity avoids the old index race. Intermediate writes are unnecessary:
-    restoration intentionally re-runs every unfinished batch, so only the
-    initial checkpoint and the final result improve recovery semantics.
-    """
+
+def _finish_fetch_finalization(batch_id, batch, snapshot):
+    if snapshot is None:
+        return
+    try:
+        _persist_fetch_batch(snapshot)
+    finally:
+        # A poll cannot observe finished=True until the recovery checkpoint is
+        # complete. Waiting gate workers are then released so they can exit.
+        with fetch_lock:
+            live = fetch_batches.get(batch_id)
+            if live is batch:
+                live["finished"] = True
+                live["paused"] = False
+                live.pop("_finalizing", None)
+                live.pop("_futures", None)
+        fetch_gate.wake_all()
+
+
+def _complete_fetch_item(batch_id, target, *, info=None, error=None, replacements=None):
+    """Atomically finish a stable batch item and persist only final state."""
     snapshot = None
     with fetch_lock:
         batch = fetch_batches.get(batch_id)
-        if not batch:
-            return
-        if target.get("status") != "loading":
+        if not batch or target.get("status") not in {"loading", "fetching"}:
             return
 
         if replacements is not None and replacements:
@@ -2709,32 +2796,23 @@ def _complete_fetch_item(batch_id, target, *, info=None, error=None, replacement
             target["status"] = "error"
             target["error"] = error or "Could not fetch item"
 
-        pending = max(0, int(batch.get("_pending", 1)) - 1)
-        batch["_pending"] = pending
-        if pending == 0 and not batch["finished"] and not batch.get("_finalizing"):
-            batch["_finalizing"] = True
-            snapshot = _fetch_batch_snapshot(batch)
-            snapshot["finished"] = True
+        batch["_pending"] = max(0, int(batch.get("_pending", 1)) - 1)
+        snapshot = _begin_fetch_finalization_locked(batch)
 
-    if snapshot is not None:
-        try:
-            _persist_fetch_batch(snapshot)
-        finally:
-            # Keep the old visibility guarantee: a poll cannot observe
-            # finished=True until the final recovery checkpoint has completed.
-            with fetch_lock:
-                live = fetch_batches.get(batch_id)
-                if live is batch:
-                    live["finished"] = True
-                    live.pop("_finalizing", None)
+    _finish_fetch_finalization(batch_id, batch, snapshot)
 
 
 def _process_fetch_url(batch_id, target):
+    acquired = fetch_gate.acquire(batch_id)
+    if not acquired:
+        return
     try:
         with fetch_lock:
             batch = fetch_batches.get(batch_id)
-            if not batch or target.get("status") != "loading":
+            if (not batch or batch.get("stopped")
+                    or target.get("status") != "loading"):
                 return
+            target["status"] = "fetching"
             url = target["url"]
             kind = batch.get("kind", "video")
 
@@ -2764,6 +2842,67 @@ def _process_fetch_url(batch_id, target):
         _complete_fetch_item(batch_id, target, info=info)
     except Exception as exc:
         _complete_fetch_item(batch_id, target, error=str(exc))
+    finally:
+        fetch_gate.release()
+
+
+def _fetch_batch_public_locked(batch):
+    return {
+        "batch_id": batch["id"],
+        "urls": [dict(item) for item in batch["urls"]],
+        "finished": bool(batch.get("finished")),
+        "paused": bool(batch.get("paused")),
+        "stopped": bool(batch.get("stopped")),
+        "kind": batch.get("kind", "video"),
+    }
+
+
+def _set_fetch_batch_paused(batch_id, paused):
+    with fetch_lock:
+        batch = fetch_batches.get(batch_id)
+        if not batch:
+            return None
+        if not batch.get("finished") and not batch.get("stopped"):
+            batch["paused"] = bool(paused)
+        payload = _fetch_batch_public_locked(batch)
+    fetch_gate.wake_all()
+    return payload
+
+
+def _stop_fetch_batch(batch_id):
+    snapshot = None
+    with fetch_lock:
+        batch = fetch_batches.get(batch_id)
+        if not batch:
+            return None
+        if not batch.get("finished"):
+            batch["stopped"] = True
+            batch["paused"] = False
+            cancelled = 0
+            for item in batch["urls"]:
+                if item.get("status") not in {"loading", "fetching"}:
+                    continue
+                item["status"] = "cancelled"
+                item["error"] = "Fetch stopped by user"
+                cancelled += 1
+            batch["_pending"] = max(
+                0, int(batch.get("_pending", cancelled)) - cancelled
+            )
+            futures = list(batch.get("_futures") or [])
+            snapshot = _begin_fetch_finalization_locked(batch)
+        else:
+            futures = []
+
+    # Futures that have not entered a worker are removed from the executor.
+    # Already-running network calls finish cooperatively, but their results are
+    # discarded because their item status is now cancelled.
+    for future in futures:
+        future.cancel()
+    fetch_gate.wake_all()
+    _finish_fetch_finalization(batch_id, batch, snapshot)
+    with fetch_lock:
+        live = fetch_batches.get(batch_id)
+        return _fetch_batch_public_locked(live) if live else None
 
 
 @app.route("/api/fetch", methods=["POST"])
@@ -2772,11 +2911,16 @@ def start_fetch_batch_route():
     urls = data.get("urls") or []
     if not urls:
         return jsonify({"error": "No URLs provided"}), 400
+    if "fetch_concurrent" in data:
+        try:
+            fetch_gate.set_limit(data.get("fetch_concurrent"))
+        except (TypeError, ValueError):
+            return jsonify({"error": "Invalid fetch_concurrent"}), 400
     mode = data.get("mode") or "video"
     if mode not in ("video", "scrape"):
         mode = "video"
     batch_id = _start_fetch_batch(urls, kind=mode)
-    return jsonify({"batch_id": batch_id})
+    return jsonify({"batch_id": batch_id, "fetch_concurrent": fetch_gate.limit})
 
 
 @app.route("/api/fetch/<batch_id>")
@@ -2785,10 +2929,25 @@ def fetch_batch_status_route(batch_id):
         batch = fetch_batches.get(batch_id)
         if not batch:
             return jsonify({"error": "Batch not found"}), 404
-        urls = [dict(u) for u in batch["urls"]]
-        finished = batch["finished"]
-    return jsonify({"batch_id": batch_id, "urls": urls, "finished": finished,
-                    "kind": batch.get("kind", "video")})
+        payload = _fetch_batch_public_locked(batch)
+    return jsonify(payload)
+
+
+@app.route("/api/fetch/<batch_id>/pause", methods=["POST"])
+def pause_fetch_batch_route(batch_id):
+    data = request.get_json(silent=True) or {}
+    payload = _set_fetch_batch_paused(batch_id, data.get("paused", True))
+    if payload is None:
+        return jsonify({"error": "Batch not found"}), 404
+    return jsonify(payload)
+
+
+@app.route("/api/fetch/<batch_id>/stop", methods=["POST"])
+def stop_fetch_batch_route(batch_id):
+    payload = _stop_fetch_batch(batch_id)
+    if payload is None:
+        return jsonify({"error": "Batch not found"}), 404
+    return jsonify(payload)
 
 
 @app.route("/api/fetch/list")
@@ -3099,7 +3258,17 @@ def config():
                 gate.set_limit(data.get("max_concurrent"))
             except (TypeError, ValueError):
                 return jsonify({"error": "Invalid max_concurrent"}), 400
-    return jsonify({"max_concurrent": gate.limit, "max_pool": MAX_POOL})
+        if "fetch_concurrent" in data:
+            try:
+                fetch_gate.set_limit(data.get("fetch_concurrent"))
+            except (TypeError, ValueError):
+                return jsonify({"error": "Invalid fetch_concurrent"}), 400
+    return jsonify({
+        "max_concurrent": gate.limit,
+        "max_pool": MAX_POOL,
+        "fetch_concurrent": fetch_gate.limit,
+        "fetch_max_pool": FETCH_MAX_WORKERS,
+    })
 
 
 @app.route("/api/cancel/<job_id>", methods=["POST"])
