@@ -20,6 +20,7 @@ import time
 import uuid
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from typing import Callable, Iterable
 from urllib.parse import urlsplit
 
@@ -52,6 +53,7 @@ class MegaHelper:
         rclone_bin: str | None = None,
         max_workers: int | None = None,
         on_link_ready: Callable[[dict], None] | None = None,
+        operation_lock: object | None = None,
     ) -> None:
         self.download_dir = os.path.realpath(download_dir)
         self.file_resolver = file_resolver
@@ -62,6 +64,7 @@ class MegaHelper:
         )
         self.rclone_bin = rclone_bin or os.environ.get("RECLIP_RCLONE", "rclone")
         self.on_link_ready = on_link_ready
+        self.operation_lock = operation_lock or nullcontext()
         self.max_workers = max(
             1,
             min(int(max_workers or os.environ.get("RECLIP_MEGA_CONCURRENT", "2")), 8),
@@ -557,6 +560,25 @@ class MegaHelper:
         return result
 
     def enqueue(
+        self,
+        selection: object,
+        *,
+        account_id: str = "auto",
+        folder: str = "ReClip",
+        preserve_groups: bool = True,
+    ) -> dict:
+        # Keep source resolution and job registration atomic with ReClip's
+        # library moves/deletes. Either the upload claims the old identity or a
+        # concurrent request must resolve the new one.
+        with self.operation_lock:
+            return self._enqueue_locked(
+                selection,
+                account_id=account_id,
+                folder=folder,
+                preserve_groups=preserve_groups,
+            )
+
+    def _enqueue_locked(
         self,
         selection: object,
         *,

@@ -91,6 +91,10 @@ MAX_JOBS = int(os.environ.get("RECLIP_MAX_JOBS", "500"))
 jobs = {}
 batches = {}
 rename_lock = threading.Lock()
+# Serializes operations that change a completed library file's path/identity.
+# MEGA enqueue uses the same guard so it can never retain a path midway through
+# a group move or local deletion.
+library_mutation_lock = threading.RLock()
 
 # Dedup: skip downloading a video that's already in DOWNLOAD_DIR.
 DEDUP_ENABLED = os.environ.get("RECLIP_DEDUP", "1") not in ("0", "false", "False", "")
@@ -1436,6 +1440,15 @@ def _probe_duration(path):
 
 def register_download(video_id, extractor, title, url, format_choice, format_id, path,
                       duration=None, thumb=None, group_id=None):
+    with library_mutation_lock:
+        return _register_download_locked(
+            video_id, extractor, title, url, format_choice, format_id, path,
+            duration=duration, thumb=thumb, group_id=group_id,
+        )
+
+
+def _register_download_locked(video_id, extractor, title, url, format_choice, format_id,
+                              path, duration=None, thumb=None, group_id=None):
     keys = _dedup_keys(video_id, extractor, url, format_choice, format_id)
     if not keys:
         return
@@ -1496,36 +1509,240 @@ def _mega_upload_active(filename, group_id=""):
     return bool(helper and helper.has_active_upload(filename, group_id))
 
 
+class LibraryMoveError(Exception):
+    def __init__(self, message, status=400):
+        super().__init__(message)
+        self.message = message
+        self.status = status
+
+
+def _clean_library_selections(selection):
+    if not isinstance(selection, list) or not selection:
+        raise LibraryMoveError("Select at least one library item")
+    if len(selection) > 500:
+        raise LibraryMoveError("At most 500 library items can be moved at once")
+    clean = []
+    seen = set()
+    for value in selection:
+        if not isinstance(value, dict) or "group_id" not in value:
+            raise LibraryMoveError("Invalid library selection")
+        filename = str(value.get("filename") or "").strip()
+        group_id = str(value.get("group_id") or "").strip()
+        if not filename or os.path.basename(filename) != filename:
+            raise LibraryMoveError("Invalid library selection")
+        identity = (group_id, filename)
+        if identity not in seen:
+            seen.add(identity)
+            clean.append({"filename": filename, "group_id": group_id})
+    return clean
+
+
+def _resolve_library_items_locked(selection):
+    """Resolve exact group+filename identities while index_lock is held."""
+    resolved = []
+    claimed_paths = set()
+    for wanted in selection:
+        filename = wanted["filename"]
+        group_id = wanted["group_id"]
+        matches = [
+            (key, entry) for key, entry in download_index.items()
+            if (entry.get("filename") or "") == filename
+            and (entry.get("group_id") or "") == group_id
+            and entry.get("file")
+        ]
+        paths = {entry.get("file") for _key, entry in matches}
+        if not paths:
+            raise LibraryMoveError(f"Library item not found: {filename}", 404)
+        if len(paths) != 1:
+            raise LibraryMoveError(f"Library item is ambiguous: {filename}", 409)
+        path = next(iter(paths))
+        if path in claimed_paths:
+            raise LibraryMoveError(f"Library selection is ambiguous: {filename}", 409)
+        claimed_paths.add(path)
+        entries = [(key, entry) for key, entry in download_index.items()
+                   if entry.get("file") == path]
+        representative = matches[0][1]
+        local_available = os.path.isfile(path)
+        if not local_available and not representative.get("mega_url"):
+            raise LibraryMoveError(f"Library item no longer exists: {filename}", 404)
+        resolved.append({
+            "from": dict(wanted),
+            "path": path,
+            "entries": entries,
+            "local_available": local_available,
+        })
+    return resolved
+
+
+def _numbered_library_name(filename, target_dir, reserved_names):
+    root, ext = os.path.splitext(filename)
+    candidate = filename
+    number = 2
+    while candidate in reserved_names or os.path.exists(os.path.join(target_dir, candidate)):
+        candidate = f"{root} ({number}){ext}"
+        number += 1
+    reserved_names.add(candidate)
+    return candidate
+
+
+def _rollback_library_renames(completed):
+    rollback_error = None
+    for source, destination in reversed(completed):
+        try:
+            if os.path.exists(destination):
+                os.rename(destination, source)
+        except OSError as exc:
+            rollback_error = rollback_error or exc
+    return rollback_error
+
+
+def _move_library_items(selection, target_group_id):
+    """Atomically reassign exact library items to a group.
+
+    Local media is renamed into the group's directory. A retained MEGA-only
+    record changes logical group/filename while keeping its historical source
+    path and remote metadata untouched.
+    """
+    clean = _clean_library_selections(selection)
+    target_group_id = str(target_group_id or "").strip()
+    with library_mutation_lock:
+        with groups_lock:
+            if target_group_id and target_group_id not in groups:
+                raise LibraryMoveError("Target group not found", 404)
+            target_dir = (os.path.join(DOWNLOAD_DIR, target_group_id)
+                          if target_group_id else DOWNLOAD_DIR)
+            try:
+                os.makedirs(target_dir, exist_ok=True)
+            except OSError as exc:
+                raise LibraryMoveError(f"Could not open the target group: {exc}", 500) from exc
+
+        with index_lock:
+            items = _resolve_library_items_locked(clean)
+            target_names = {
+                entry.get("filename") or os.path.basename(entry.get("file") or "")
+                for entry in download_index.values()
+                if (entry.get("group_id") or "") == target_group_id
+            }
+
+        for item in items:
+            source = item["from"]
+            if source["group_id"] != target_group_id and _mega_upload_active(
+                    source["filename"], source["group_id"]):
+                raise LibraryMoveError(
+                    f"Wait for the MEGA upload and link to finish: {source['filename']}",
+                    409,
+                )
+
+        planned = []
+        reserved = set(target_names)
+        # Names belonging to records that are already in the target remain
+        # reserved. Sources in other groups do not occupy the destination.
+        for item in items:
+            source = item["from"]
+            if source["group_id"] == target_group_id:
+                planned.append({**item, "filename": source["filename"],
+                                "destination": item["path"], "unchanged": True})
+                reserved.add(source["filename"])
+                continue
+            filename = _numbered_library_name(source["filename"], target_dir, reserved)
+            destination = (os.path.join(target_dir, filename)
+                           if item["local_available"] else item["path"])
+            planned.append({**item, "filename": filename,
+                            "destination": destination, "unchanged": False})
+
+        completed_renames = []
+        try:
+            with rename_lock:
+                for item in planned:
+                    if item["unchanged"] or not item["local_available"]:
+                        continue
+                    os.rename(item["path"], item["destination"])
+                    completed_renames.append((item["path"], item["destination"]))
+        except OSError as exc:
+            rollback = _rollback_library_renames(completed_renames)
+            detail = f"Could not move library files: {exc}"
+            if rollback:
+                detail += f" (rollback also failed: {rollback})"
+            raise LibraryMoveError(detail, 500) from exc
+
+        with index_lock:
+            snapshots = {key: dict(entry) for item in planned
+                         for key, entry in item["entries"]}
+            try:
+                for item in planned:
+                    if item["unchanged"]:
+                        continue
+                    for _key, entry in item["entries"]:
+                        if item["local_available"]:
+                            entry["file"] = item["destination"]
+                        entry["filename"] = item["filename"]
+                        entry["group_id"] = target_group_id or None
+                if any(not item["unchanged"] for item in planned):
+                    _save_index_locked(strict=True)
+            except Exception as exc:
+                for key, snapshot in snapshots.items():
+                    download_index[key].clear()
+                    download_index[key].update(snapshot)
+                rollback = _rollback_library_renames(completed_renames)
+                detail = f"Could not save library group changes: {exc}"
+                if rollback:
+                    detail += f" (rollback also failed: {rollback})"
+                raise LibraryMoveError(detail, 500) from exc
+
+        for item in planned:
+            if item["unchanged"]:
+                continue
+            for job in jobs.values():
+                if job.get("file") == item["path"]:
+                    if item["local_available"]:
+                        job["file"] = item["destination"]
+                    job["filename"] = item["filename"]
+                    job["group_id"] = target_group_id or None
+
+        return {
+            "ok": True,
+            "target_group_id": target_group_id,
+            "moved_count": sum(not item["unchanged"] for item in planned),
+            "unchanged_count": sum(item["unchanged"] for item in planned),
+            "files": [{
+                "from": item["from"],
+                "to": {"filename": item["filename"], "group_id": target_group_id},
+                "unchanged": item["unchanged"],
+            } for item in planned],
+        }
+
+
 def _remove_local_library_file(path):
     """Remove a local media file, retaining its index rows when MEGA-backed."""
     if not path:
         return False
-    try:
-        size_bytes = os.path.getsize(path)
-    except OSError:
-        size_bytes = None
-    try:
-        os.remove(path)
-    except FileNotFoundError:
-        pass
+    with library_mutation_lock:
+        try:
+            size_bytes = os.path.getsize(path)
+        except OSError:
+            size_bytes = None
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
 
-    with index_lock:
-        matching = [key for key, entry in download_index.items()
-                    if entry.get("file") == path]
-        retain = any(download_index[key].get("mega_url") for key in matching)
-        if retain:
-            deleted_at = time.time()
-            for key in matching:
-                entry = download_index[key]
-                if size_bytes is not None:
-                    entry["size_bytes"] = size_bytes
-                entry["local_deleted_at"] = deleted_at
-        else:
-            for key in matching:
-                download_index.pop(key, None)
-        if matching:
-            _save_index_locked()
-    return retain
+        with index_lock:
+            matching = [key for key, entry in download_index.items()
+                        if entry.get("file") == path]
+            retain = any(download_index[key].get("mega_url") for key in matching)
+            if retain:
+                deleted_at = time.time()
+                for key in matching:
+                    entry = download_index[key]
+                    if size_bytes is not None:
+                        entry["size_bytes"] = size_bytes
+                    entry["local_deleted_at"] = deleted_at
+            else:
+                for key in matching:
+                    download_index.pop(key, None)
+            if matching:
+                _save_index_locked()
+        return retain
 
 
 def finalize_cancelled(job, job_id):
@@ -2616,16 +2833,17 @@ def cancel_download(job_id):
 @app.route("/api/delete/<job_id>", methods=["POST", "DELETE"])
 def delete_download(job_id):
     # Idempotent: deleting an unknown/already-gone job is a success.
-    job = jobs.get(job_id)
-    path = job.get("file") if job else None
-    if path:
-        filename, gid = _library_identity_for_path(path)
-        if _mega_upload_active(filename, gid):
-            return jsonify({"error": "Wait for the MEGA upload and link to finish"}), 409
-    try:
-        delete_job(job_id)
-    except OSError as exc:
-        return jsonify({"error": f"Could not delete the local file: {exc}"}), 500
+    with library_mutation_lock:
+        job = jobs.get(job_id)
+        path = job.get("file") if job else None
+        if path:
+            filename, gid = _library_identity_for_path(path)
+            if _mega_upload_active(filename, gid):
+                return jsonify({"error": "Wait for the MEGA upload and link to finish"}), 409
+        try:
+            delete_job(job_id)
+        except OSError as exc:
+            return jsonify({"error": f"Could not delete the local file: {exc}"}), 500
     return jsonify({"ok": True})
 
 
@@ -2848,24 +3066,39 @@ def library_delete():
               else request.values.get("group_id") or "")
     if not name or os.path.basename(name) != name:
         return jsonify({"error": "Bad filename"}), 400
-    with index_lock:
-        paths = [e.get("file") for e in download_index.values()
-                 if (e.get("filename") or "") == name and e.get("file")
-                 and (not gid_supplied or (e.get("group_id") or "") == gid)]
-        if not paths:
-            return jsonify({"error": "File not found"}), 404
-        path = paths[0]
-    _matched_name, matched_gid = _library_identity_for_path(path)
-    if _mega_upload_active(name, matched_gid):
-        return jsonify({"error": "Wait for the MEGA upload and link to finish"}), 409
-    try:
-        retained = _remove_local_library_file(path)
-    except OSError as exc:
-        return jsonify({"error": f"Could not delete the local file: {exc}"}), 500
-    for job in jobs.values():
-        if job.get("file") == path:
-            job["file"] = None
+    with library_mutation_lock:
+        with index_lock:
+            paths = {e.get("file") for e in download_index.values()
+                     if (e.get("filename") or "") == name and e.get("file")
+                     and (not gid_supplied or (e.get("group_id") or "") == gid)}
+            if not paths:
+                return jsonify({"error": "File not found"}), 404
+            if gid_supplied and len(paths) != 1:
+                return jsonify({"error": "Library item is ambiguous"}), 409
+            path = next(iter(paths))
+        _matched_name, matched_gid = _library_identity_for_path(path)
+        if _mega_upload_active(name, matched_gid):
+            return jsonify({"error": "Wait for the MEGA upload and link to finish"}), 409
+        try:
+            retained = _remove_local_library_file(path)
+        except OSError as exc:
+            return jsonify({"error": f"Could not delete the local file: {exc}"}), 500
+        for job in jobs.values():
+            if job.get("file") == path:
+                job["file"] = None
     return jsonify({"ok": True, "record_retained": retained})
+
+
+@app.route("/api/library/group", methods=["PATCH"])
+def move_library_group():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or "target_group_id" not in data:
+        return jsonify({"error": "Target group is required"}), 400
+    try:
+        result = _move_library_items(data.get("files"), data.get("target_group_id"))
+    except LibraryMoveError as exc:
+        return jsonify({"error": exc.message}), exc.status
+    return jsonify(result)
 
 
 @app.route("/api/groups")
@@ -2926,40 +3159,33 @@ def rename_group(gid):
 
 @app.route("/api/groups/<gid>", methods=["DELETE"])
 def delete_group(gid):
-    """Delete a group, moving its files back to the downloads root (no data loss)."""
-    with groups_lock:
-        if gid not in groups:
-            return jsonify({"error": "Group not found"}), 404
-        groups.pop(gid)
-        _save_groups_locked()
-
-    with index_lock:
-        files = []
-        seen = set()
-        for e in download_index.values():
-            if e.get("group_id") == gid and e.get("file") and e["file"] not in seen:
-                files.append(e["file"])
-                seen.add(e["file"])
-        changed = False
-        for path in files:
-            newpath = path
-            target = os.path.join(DOWNLOAD_DIR, os.path.basename(path))
-            if os.path.isfile(path) and os.path.abspath(target) != os.path.abspath(path):
-                try:
-                    os.rename(path, target)
-                    newpath = target
-                except OSError:
-                    pass
-            for e in download_index.values():
-                if e.get("file") == path:
-                    e["file"] = newpath
-                    e["filename"] = os.path.basename(newpath)
-                    e["group_id"] = None
-                    changed = True
-        if changed:
-            _save_index_locked()
-    shutil.rmtree(os.path.join(DOWNLOAD_DIR, gid), ignore_errors=True)
-    return jsonify({"ok": True})
+    """Delete a group after safely reassigning all its records to Ungrouped."""
+    with library_mutation_lock:
+        with groups_lock:
+            if gid not in groups:
+                return jsonify({"error": "Group not found"}), 404
+        with index_lock:
+            selection = []
+            seen_paths = set()
+            for entry in download_index.values():
+                path = entry.get("file")
+                if (entry.get("group_id") or "") != gid or not path or path in seen_paths:
+                    continue
+                seen_paths.add(path)
+                selection.append({
+                    "filename": entry.get("filename") or os.path.basename(path),
+                    "group_id": gid,
+                })
+        if selection:
+            try:
+                _move_library_items(selection, "")
+            except LibraryMoveError as exc:
+                return jsonify({"error": exc.message}), exc.status
+        with groups_lock:
+            groups.pop(gid, None)
+            _save_groups_locked()
+        shutil.rmtree(os.path.join(DOWNLOAD_DIR, gid), ignore_errors=True)
+    return jsonify({"ok": True, "moved_count": len(selection)})
 
 
 # ---- MEGA helper plugin --------------------------------------------------
@@ -2967,33 +3193,33 @@ def delete_group(gid):
 # through ReClip's persisted library rather than accepting an arbitrary server
 # path from the request.
 def _resolve_mega_files(selection):
-    resolved = []
-    with index_lock:
-        entries = list(download_index.values())
-        for wanted in selection:
-            name = wanted.get("filename") or ""
-            gid = wanted.get("group_id") or ""
-            matches = [
-                entry for entry in entries
-                if (entry.get("filename") or "") == name
-                and (entry.get("group_id") or "") == gid
-                and entry.get("file")
-            ]
-            if not matches:
-                raise MegaHelperError(f'File not found in library: {name}', 404)
-            path = matches[0]["file"]
-            if not os.path.isfile(path):
-                raise MegaHelperError(f'File no longer exists: {name}', 404)
-            resolved.append({
-                "path": path,
-                "group_id": gid,
-                "group_name": group_name(gid),
-            })
-    return resolved
+    try:
+        clean = _clean_library_selections(selection)
+        with library_mutation_lock, index_lock:
+            items = _resolve_library_items_locked(clean)
+            resolved = []
+            for item in items:
+                name = item["from"]["filename"]
+                gid = item["from"]["group_id"]
+                if not item["local_available"]:
+                    raise MegaHelperError(f'File no longer exists: {name}', 404)
+                resolved.append({
+                    "path": item["path"],
+                    "group_id": gid,
+                    "group_name": group_name(gid),
+                })
+            return resolved
+    except LibraryMoveError as exc:
+        raise MegaHelperError(exc.message, exc.status) from exc
 
 
 def _record_mega_link(upload):
     """Persist a completed upload's public URL on every dedup row for its file."""
+    with library_mutation_lock:
+        return _record_mega_link_locked(upload)
+
+
+def _record_mega_link_locked(upload):
     public_url = str(upload.get("public_url") or "").strip()
     parsed_url = urlparse(public_url)
     mega_host = (parsed_url.hostname or "").lower()
@@ -3047,6 +3273,7 @@ mega_helper = MegaHelper(
     DOWNLOAD_DIR,
     _resolve_mega_files,
     on_link_ready=_record_mega_link,
+    operation_lock=library_mutation_lock,
 )
 mega_helper.reconcile_links()
 app.register_blueprint(mega_helper.blueprint)

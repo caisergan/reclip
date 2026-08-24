@@ -952,22 +952,22 @@
       align-items: center;
       justify-content: center;
     }
-    .lib-select input { accent-color: #d9272e; cursor: pointer; }
+    .lib-select input { accent-color: var(--accent); cursor: pointer; }
     .mega-selection {
       margin-top: 10px;
       display: flex;
       align-items: center;
       gap: 8px;
       padding: 8px 9px;
-      border: 1px solid rgba(217, 39, 46, 0.28);
+      border: 1px solid var(--card-border);
       border-radius: 9px;
-      background: rgba(217, 39, 46, 0.055);
+      background: var(--card);
       font-size: 0.68rem;
       color: var(--fg);
     }
     .mega-selection[hidden] { display: none; }
     .mega-selection span { flex: 1; }
-    .mega-selection button {
+    .mega-selection button, .mega-selection select {
       border: 1px solid var(--card-border);
       border-radius: 7px;
       background: var(--card);
@@ -977,6 +977,8 @@
       font-family: 'DM Mono', monospace;
       font-size: 0.64rem;
     }
+    .mega-selection select { max-width: 112px; color: var(--fg); }
+    .mega-selection button:disabled, .mega-selection select:disabled { opacity: .45; cursor: not-allowed; }
     .mega-selection .mega-send { color: #fff; border-color: #d9272e; background: #d9272e; }
     .mega-overlay {
       position: fixed;
@@ -1269,8 +1271,10 @@
       </div>
       <div class="mega-selection" id="megaSelection" hidden>
         <span id="megaSelectionCount">0 files selected</span>
+        <select id="libraryMoveTarget" aria-label="Move selected files to group"><option value="">Ungrouped</option></select>
+        <button id="libraryMoveBtn" onclick="moveSelectedLibrary()">Move</button>
+        <button id="libraryMegaBtn" class="mega-send" onclick="openMega()">Send to MEGA</button>
         <button onclick="clearMegaSelection()">Clear</button>
-        <button class="mega-send" onclick="openMega()">Send to MEGA</button>
       </div>
       <div class="library-list" id="libraryList">
         <div class="library-empty">No downloads yet</div>
@@ -1479,17 +1483,18 @@
       return JSON.stringify([file.group_id || '', file.filename || '']);
     }
 
-    function selectedMegaFiles() {
+    function selectedLibraryFiles() {
       const byKey = new Map(libraryData.map(file => [megaFileKey(file), file]));
-      return [...megaSelected].map(key => byKey.get(key))
-        .filter(file => file && file.local_available !== false);
+      return [...megaSelected].map(key => byKey.get(key)).filter(Boolean);
+    }
+
+    function selectedMegaFiles() {
+      return selectedLibraryFiles().filter(file => file.local_available !== false);
     }
 
     function toggleMegaFile(checkbox) {
       let key = '';
       try { key = decodeURIComponent(checkbox.dataset.key || ''); } catch { return; }
-      const file = libraryData.find(item => megaFileKey(item) === key);
-      if (!file || file.local_available === false) { checkbox.checked = false; return; }
       if (checkbox.checked) megaSelected.add(key); else megaSelected.delete(key);
       renderMegaSelection();
     }
@@ -1501,7 +1506,8 @@
     }
 
     function renderMegaSelection() {
-      const files = selectedMegaFiles();
+      const files = selectedLibraryFiles();
+      const localFiles = selectedMegaFiles();
       const bar = document.getElementById('megaSelection');
       const count = document.getElementById('megaSelectionCount');
       if (bar) bar.hidden = files.length === 0;
@@ -1511,13 +1517,61 @@
       }
       const summary = document.getElementById('megaSelectedSummary');
       if (summary) {
-        const total = files.reduce((sum, file) => sum + Number(file.size || 0), 0);
-        summary.textContent = files.length
-          ? `${files.length} file selected (${fmtSizeJS(total)}). Automatic mode distributes them according to current free storage.`
-          : 'No files selected. Select files from the Downloads panel first.';
+        const total = localFiles.reduce((sum, file) => sum + Number(file.size || 0), 0);
+        summary.textContent = localFiles.length
+          ? `${localFiles.length} file selected (${fmtSizeJS(total)}). Automatic mode distributes them according to current free storage.`
+          : 'No local files selected. Select files from the Downloads panel first.';
       }
       const upload = document.getElementById('megaUploadBtn');
-      if (upload) upload.disabled = files.length === 0;
+      if (upload) upload.disabled = localFiles.length === 0;
+      const mega = document.getElementById('libraryMegaBtn');
+      if (mega) {
+        mega.disabled = !files.length || localFiles.length !== files.length;
+        mega.title = localFiles.length !== files.length ? 'Local copy required for MEGA upload' : '';
+      }
+      const move = document.getElementById('libraryMoveBtn');
+      if (move) move.disabled = files.length === 0;
+    }
+
+    async function moveSelectedLibrary() {
+      const files = selectedLibraryFiles();
+      if (!files.length) return;
+      const button = document.getElementById('libraryMoveBtn');
+      const target = document.getElementById('libraryMoveTarget');
+      if (button) { button.disabled = true; button.textContent = 'Moving…'; }
+      if (target) target.disabled = true;
+      try {
+        const response = await fetch('/api/library/group', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            files: files.map(file => ({ filename: file.filename, group_id: file.group_id || '' })),
+            target_group_id: target ? target.value : '',
+          }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.error || 'Move failed');
+        megaSelected.clear();
+        await refreshLibrary();
+        await refreshGroups();
+      } catch (error) {
+        alert(error.message || 'Move failed');
+      } finally {
+        if (button) { button.disabled = false; button.textContent = 'Move'; }
+        if (target) target.disabled = false;
+        renderMegaSelection();
+      }
+    }
+
+    function moveOneLibrary(encodedKey) {
+      let key = '';
+      try { key = decodeURIComponent(encodedKey || ''); } catch { return; }
+      megaSelected.clear();
+      megaSelected.add(key);
+      renderMegaSelection();
+      renderLibrary();
+      const target = document.getElementById('libraryMoveTarget');
+      if (target) target.focus();
     }
 
     function setMegaStatus(id, message, error = false) {
@@ -1822,7 +1876,7 @@
       let lib;
       try { lib = await (await fetch('/api/library')).json(); } catch { return; }
       libraryData = lib.files || [];
-      const validMegaKeys = new Set(libraryData.filter(file => file.local_available !== false).map(megaFileKey));
+      const validMegaKeys = new Set(libraryData.map(megaFileKey));
       [...megaSelected].forEach(key => { if (!validMegaKeys.has(key)) megaSelected.delete(key); });
       renderLibrary();
       renderMegaSelection();
@@ -1927,9 +1981,9 @@
         const megaDataKey = encodeURIComponent(megaKey);
         return `
           <div class="lib-item${f.local_available === false ? ' remote-only' : ''}">
-            ${f.local_available === false ? '<span class="lib-select"></span>' : `<label class="lib-select" title="Select for MEGA upload">
+            <label class="lib-select" title="${megaSelected.has(megaKey) ? 'Deselect' : 'Select'} library item">
               <input type="checkbox" data-key="${megaDataKey}" ${megaSelected.has(megaKey) ? 'checked' : ''} onchange="toggleMegaFile(this)">
-            </label>`}
+            </label>
             <div class="lib-item-thumb">
               ${thumbUrl ? `<img src="${thumbUrl}" alt="" loading="lazy">` : `<span class="lib-thumb-ic">▶</span>`}
             </div>
@@ -1941,6 +1995,7 @@
               <span class="lib-item-meta">${esc(meta)}</span>
             </div>
             <div class="lib-item-actions">
+              <button class="lib-link" title="Move to another group" onclick="moveOneLibrary('${megaDataKey}')">⇥</button>
               ${f.url ? `<a class="lib-link" href="${escAttr(f.url)}" target="_blank" rel="noopener noreferrer" title="Open source page">↗</a>` : ''}
               ${f.mega_url ? `<a class="lib-mega" href="${escAttr(f.mega_url)}" target="_blank" rel="noopener noreferrer" title="Open in MEGA">M</a>` : ''}
               ${f.local_available === false ? '' : `<a class="lib-dl" href="${href}" download title="Download local file">↓</a>
@@ -2003,6 +2058,14 @@
         try { if (!want) want = localStorage.getItem('reclip_group') || ''; } catch {}
         if ([...dl.options].some(o => o.value === want)) dl.value = want;
         selectedGroup = dl.value;
+      }
+
+      const moveTarget = document.getElementById('libraryMoveTarget');
+      if (moveTarget) {
+        const current = moveTarget.value || '';
+        moveTarget.innerHTML = `<option value="">Ungrouped</option>` + allGroups
+          .map(g => `<option value="${esc(g.id)}">${esc(g.name)}</option>`).join('');
+        if ([...moveTarget.options].some(o => o.value === current)) moveTarget.value = current;
       }
 
       // library filter select

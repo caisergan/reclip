@@ -15,6 +15,7 @@ https://github.com/user-attachments/assets/419d3e50-c933-444b-8cab-a9724986ba05
 - MP4 video or MP3 audio extraction
 - Quality/resolution picker
 - Bulk downloads — paste multiple URLs at once
+- Multi-select completed files and move them between groups
 - Automatic URL deduplication
 - Multi-account MEGA helper with storage quota checks and transfer progress
 - Automatic distribution of selected files across MEGA accounts by free space
@@ -52,8 +53,8 @@ under `.tools/rclone` automatically if the system rclone has no MEGA support.
 4. Use the Fetch split button to choose **Fetch only** or **Fetch & download**.
 5. Review fetched cards, choose a quality when available, and download individual,
    selected, or all ready items.
-6. Browse, filter, redownload, delete, or send completed files to MEGA from the
-   persistent Downloads library.
+6. Browse, filter, multi-select, move between groups, redownload, delete, or send
+   completed files to MEGA from the persistent Downloads library.
 
 The previous interface remains available at **http://localhost:8899/legacy**.
 
