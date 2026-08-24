@@ -1,3 +1,4 @@
+import copy
 import os
 import uuid
 import glob
@@ -12,8 +13,8 @@ import subprocess
 import threading
 import time
 import sqlite3
-from collections import deque
-from concurrent.futures import ThreadPoolExecutor
+from collections import OrderedDict, deque
+from concurrent.futures import Future, ThreadPoolExecutor
 from urllib.parse import quote, urljoin, urlparse
 from urllib.request import Request, urlopen
 from flask import Flask, request, jsonify, send_file, render_template
@@ -32,6 +33,59 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 MAX_POOL = int(os.environ.get("RECLIP_MAX_POOL", "8"))
 DOWNLOAD_TIMEOUT = int(os.environ.get("RECLIP_DOWNLOAD_TIMEOUT", "1800"))
 download_pool = ThreadPoolExecutor(max_workers=MAX_POOL)
+
+
+def _bounded_env_int(name, default, minimum, maximum):
+    """Read an integer setting without letting a bad value break startup."""
+    try:
+        value = int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        value = int(default)
+    return max(minimum, min(value, maximum))
+
+
+def _bounded_env_float(name, default, minimum, maximum):
+    """Read a floating-point setting clamped to a safe range."""
+    try:
+        value = float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        value = float(default)
+    return max(minimum, min(value, maximum))
+
+
+# Metadata extraction is network/process-bound. Keep each stage independently
+# bounded so large batches gain parallelism without creating unbounded curl or
+# yt-dlp subprocesses. Expansion has its own pool because /api/fetch waits for
+# playlist roots; probe work is shared globally by all resolver/scrape jobs.
+FETCH_WORKERS = _bounded_env_int("RECLIP_FETCH_WORKERS", 6, 1, 16)
+FETCH_EXPAND_WORKERS = _bounded_env_int(
+    "RECLIP_FETCH_EXPAND_WORKERS", min(4, FETCH_WORKERS), 1, 8
+)
+FETCH_PROBE_WORKERS = _bounded_env_int("RECLIP_FETCH_PROBE_WORKERS", 8, 1, 32)
+FETCH_PROBE_WINDOW = _bounded_env_int(
+    "RECLIP_FETCH_PROBE_WINDOW", 4, 1, FETCH_PROBE_WORKERS
+)
+FETCH_INFO_CACHE_TTL = _bounded_env_float(
+    "RECLIP_FETCH_CACHE_TTL", 300, 0, 3600
+)
+FETCH_INFO_CACHE_SIZE = _bounded_env_int(
+    "RECLIP_FETCH_CACHE_SIZE", 256, 1, 2048
+)
+
+_fetch_executor = ThreadPoolExecutor(
+    max_workers=FETCH_WORKERS, thread_name_prefix="fetch-info"
+)
+_fetch_expand_executor = ThreadPoolExecutor(
+    max_workers=FETCH_EXPAND_WORKERS, thread_name_prefix="fetch-expand"
+)
+# Provider expansion may recurse from a root worker into an album frontier.
+# A distinct bounded pool avoids nested-submit deadlocks.
+_fetch_expand_page_executor = ThreadPoolExecutor(
+    max_workers=FETCH_EXPAND_WORKERS, thread_name_prefix="fetch-expand-page"
+)
+_fetch_probe_executor = ThreadPoolExecutor(
+    max_workers=FETCH_PROBE_WORKERS, thread_name_prefix="fetch-probe"
+)
 
 
 class DownloadGate:
@@ -386,6 +440,43 @@ def media_verdict(url, referer=None):
     return -1
 
 
+def _ordered_media_verdicts(candidates, referer=None):
+    """Yield probe results in candidate order while probing ahead concurrently.
+
+    Resolver choice remains deterministic: callers observe exactly the same
+    ranked order as the old serial loop. At most FETCH_PROBE_WINDOW requests
+    are speculative for one caller, while the shared executor bounds probes
+    across every active fetch batch. Pending work is cancelled when a caller
+    finds a winner early.
+    """
+    items = list(candidates)
+    pending = {}
+    next_index = 0
+    initial = min(len(items), FETCH_PROBE_WINDOW)
+    for next_index in range(initial):
+        pending[next_index] = _fetch_probe_executor.submit(
+            media_verdict, items[next_index], referer
+        )
+    next_index = initial
+
+    try:
+        for index, candidate in enumerate(items):
+            future = pending.pop(index)
+            try:
+                verdict = future.result()
+            except Exception:
+                verdict = -1
+            yield candidate, verdict
+            if next_index < len(items):
+                pending[next_index] = _fetch_probe_executor.submit(
+                    media_verdict, items[next_index], referer
+                )
+                next_index += 1
+    finally:
+        for future in pending.values():
+            future.cancel()
+
+
 def _candidate_rank(candidate, video_id):
     """Score how likely a scraped URL is the page's own playable stream.
 
@@ -688,13 +779,26 @@ def _expand_via_providers(url):
     results, queue, seen, depth = [], [url], {url}, 0
     while queue and depth < MAX_EXPAND_DEPTH:
         nxt = []
-        for u in queue:
-            prov = _matching_expander(u)
-            if prov is None:
-                results.append(u)
+        # A listing can fan out to many independent albums. Fetch one frontier
+        # concurrently, then consume results in queue order so deduplication and
+        # output order remain deterministic.
+        pending = {}
+        providers = {}
+        for index, item_url in enumerate(queue):
+            provider = _matching_expander(item_url)
+            providers[index] = provider
+            if provider is not None:
+                pending[index] = _fetch_expand_page_executor.submit(
+                    _PROVIDER_EXPANDERS[provider["kind"]], item_url, provider
+                )
+
+        for index, item_url in enumerate(queue):
+            provider = providers[index]
+            if provider is None:
+                results.append(item_url)
                 continue
             try:
-                children = _PROVIDER_EXPANDERS[prov["kind"]](u, prov)
+                children = pending[index].result()
             except Exception:
                 children = []
             for child in children:
@@ -779,16 +883,19 @@ def resolve_embedded_media(url, referer=None, visited=None, depth=0, budget=None
         ranked = sorted(media_candidates[:MAX_CANDIDATE_PROBES],
                         key=lambda c: -_candidate_rank(c, video_id))
         chosen = None
-        for candidate in ranked:
-            verdict = media_verdict(candidate, referer=url)
-            if verdict == 1:
-                chosen = candidate
-                break
-            if verdict == 0:
-                continue
-            if _candidate_rank(candidate, video_id) >= 2:
-                chosen = candidate  # indeterminate but it IS this page's file
-                break
+        verdicts = _ordered_media_verdicts(ranked, referer=url)
+        try:
+            for candidate, verdict in verdicts:
+                if verdict == 1:
+                    chosen = candidate
+                    break
+                if verdict == 0:
+                    continue
+                if _candidate_rank(candidate, video_id) >= 2:
+                    chosen = candidate  # indeterminate but it IS this page's file
+                    break
+        finally:
+            verdicts.close()
         if chosen is None:
             chosen = media_candidates[0]  # historic fallback
         return {
@@ -2119,72 +2226,170 @@ def legacy_index():
     return render_template("legacy.html")
 
 
-def fetch_video_info(url):
-    """Extract normalized video info for one URL.
+_fetch_info_cache = OrderedDict()
+_fetch_info_inflight = {}
+_fetch_info_lock = threading.Lock()
 
-    Shared by /api/info and the server-side fetch batches so both stay in sync.
-    Raises on failure (callers wrap/propagate the error message).
-    """
-    try:
-        info = run_ytdlp_json(url, timeout=60)
-        resolved = None
-    except RuntimeError as primary_error:
-        resolved = resolve_embedded_media(url)
-        if not resolved:
-            raise RuntimeError(str(primary_error))
+
+def _direct_source_info(resolved):
+    """Build static card metadata for a resolved URL yt-dlp cannot inspect."""
+    return {
+        "title": resolved.get("title") or "",
+        "thumbnail": resolved.get("thumbnail") or "",
+        "duration": None,
+        "uploader": "",
+        "formats": [{"id": "direct", "label": "Direct source", "height": 0}],
+        "id": None,
+        "extractor": resolved.get("extractor") or "generic",
+    }
+
+
+def _extract_video_info(url):
+    """Perform the expensive, cacheable portion of metadata extraction."""
+    # Configured providers exist specifically for wrappers yt-dlp cannot read.
+    # Resolve those first rather than waiting for a doomed 60-second yt-dlp
+    # attempt. A provider miss still falls through to the generic path.
+    resolved = resolve_provider(url) if _provider_resolver_applies(url) else None
+    if resolved and resolved.get("filename"):
+        # A signed fixed file already has its authoritative filename/metadata;
+        # probing it with yt-dlp adds a process and commonly fails by design.
+        return _direct_source_info(resolved)
+
+    if resolved:
         try:
-            info = run_ytdlp_json(resolved["media_url"], referer=resolved.get("referer"), timeout=60)
-            # Prefer the provider's human-readable filename over the CDN's
-            # UUID path segment that direct-URL extraction usually reports.
+            info = run_ytdlp_json(
+                resolved["media_url"], referer=resolved.get("referer"), timeout=60
+            )
             if resolved.get("title"):
                 info["title"] = resolved["title"]
         except (RuntimeError, ValueError):
-            # The page resolved to a direct file, but yt-dlp refuses its final
-            # URL (e.g. a CDN redirect ending in '.php'). We can still download
-            # it through run_download's direct HTTP fallback, so expose a single
-            # "direct" quality instead of failing the card.
-            existing = find_existing_by_url(url) or {}
-            return {
-                "title": resolved.get("title") or "",
-                "thumbnail": resolved.get("thumbnail") or "",
-                "duration": None,
-                "uploader": "",
-                "formats": [{"id": "direct", "label": "Direct source", "height": 0}],
-                "id": None,
-                "extractor": resolved.get("extractor") or "generic",
-                "already_on_server": bool(existing),
-                "existing_file": existing.get("filename", ""),
-            }
+            return _direct_source_info(resolved)
+    else:
+        try:
+            info = run_ytdlp_json(url, timeout=60)
+        except RuntimeError as primary_error:
+            resolved = resolve_embedded_media(url)
+            if not resolved:
+                raise RuntimeError(str(primary_error))
+            if resolved.get("filename"):
+                return _direct_source_info(resolved)
+            try:
+                info = run_ytdlp_json(
+                    resolved["media_url"],
+                    referer=resolved.get("referer"),
+                    timeout=60,
+                )
+                # Prefer the provider's human-readable filename over the CDN's
+                # UUID path segment that direct-URL extraction usually reports.
+                if resolved.get("title"):
+                    info["title"] = resolved["title"]
+            except (RuntimeError, ValueError):
+                # The page resolved to a direct file, but yt-dlp refuses its
+                # final URL. The downloader's direct HTTP fallback can still
+                # consume it, so keep the card usable.
+                return _direct_source_info(resolved)
 
-    # Build quality options — keep best format per resolution
+    # Build quality options — keep the highest-bitrate format per resolution.
     best_by_height = {}
-    for f in info.get("formats", []):
-        height = f.get("height")
-        if height and f.get("vcodec", "none") != "none":
-            tbr = f.get("tbr") or 0
-            if height not in best_by_height or tbr > (best_by_height[height].get("tbr") or 0):
-                best_by_height[height] = f
+    for media_format in info.get("formats", []):
+        height = media_format.get("height")
+        if height and media_format.get("vcodec", "none") != "none":
+            tbr = media_format.get("tbr") or 0
+            if (
+                height not in best_by_height
+                or tbr > (best_by_height[height].get("tbr") or 0)
+            ):
+                best_by_height[height] = media_format
     formats = [
-        {"id": f["format_id"], "label": f"{height}p", "height": height}
-        for height, f in sorted(best_by_height.items(), reverse=True)
+        {
+            "id": media_format["format_id"],
+            "label": f"{height}p",
+            "height": height,
+        }
+        for height, media_format in sorted(best_by_height.items(), reverse=True)
     ]
     if not formats:
-        # Direct-file URLs (signed CDN links etc.) carry a single unnamed
-        # stream — expose it under the established "direct" pseudo-format so
-        # the card stays downloadable instead of showing no qualities.
+        # Direct-file URLs carry a single unnamed stream.
         formats = [{"id": "direct", "label": "Direct source", "height": 0}]
-    existing = find_existing_by_url(url) or {}
     return {
         "title": (resolved or {}).get("title") or info.get("title", ""),
-        "thumbnail": (resolved or {}).get("thumbnail") or info.get("thumbnail", ""),
+        "thumbnail": (
+            (resolved or {}).get("thumbnail") or info.get("thumbnail", "")
+        ),
         "duration": info.get("duration"),
         "uploader": info.get("uploader", ""),
         "formats": formats,
         "id": info.get("id"),
-        "extractor": (resolved or {}).get("extractor") or info.get("extractor_key") or info.get("extractor") or "",
-        "already_on_server": bool(existing),
-        "existing_file": existing.get("filename", ""),
+        "extractor": (
+            (resolved or {}).get("extractor")
+            or info.get("extractor_key")
+            or info.get("extractor")
+            or ""
+        ),
     }
+
+
+def _with_existing_download(url, extracted):
+    """Attach live library state to otherwise cacheable extractor metadata."""
+    result = copy.deepcopy(extracted)
+    existing = find_existing_by_url(url) or {}
+    result["already_on_server"] = bool(existing)
+    result["existing_file"] = existing.get("filename", "")
+    return result
+
+
+def fetch_video_info(url):
+    """Extract normalized video info with TTL caching and request coalescing.
+
+    Concurrent batches requesting the same URL share one yt-dlp/provider run.
+    Successful static metadata is cached briefly; local-library fields are
+    recomputed on every call so a newly downloaded/deleted file is never stale.
+    Failures are shared only with current waiters and are not cached.
+    """
+    key = (url or "").strip()
+    now = time.monotonic()
+    owner = False
+    extracted = None
+
+    with _fetch_info_lock:
+        cached = _fetch_info_cache.get(key)
+        if cached:
+            cached_at, cached_value = cached
+            if now - cached_at <= FETCH_INFO_CACHE_TTL:
+                _fetch_info_cache.move_to_end(key)
+                extracted = cached_value
+            else:
+                _fetch_info_cache.pop(key, None)
+
+        if extracted is None:
+            future = _fetch_info_inflight.get(key)
+            if future is None:
+                future = Future()
+                _fetch_info_inflight[key] = future
+                owner = True
+
+    if extracted is not None:
+        return _with_existing_download(key, extracted)
+    if not owner:
+        return _with_existing_download(key, future.result())
+
+    try:
+        extracted = _extract_video_info(key)
+    except BaseException as exc:
+        with _fetch_info_lock:
+            _fetch_info_inflight.pop(key, None)
+            future.set_exception(exc)
+        raise
+
+    with _fetch_info_lock:
+        if FETCH_INFO_CACHE_TTL > 0:
+            _fetch_info_cache[key] = (time.monotonic(), extracted)
+            _fetch_info_cache.move_to_end(key)
+            while len(_fetch_info_cache) > FETCH_INFO_CACHE_SIZE:
+                _fetch_info_cache.popitem(last=False)
+        _fetch_info_inflight.pop(key, None)
+        future.set_result(extracted)
+    return _with_existing_download(key, extracted)
 
 
 @app.route("/api/info", methods=["POST"])
@@ -2230,8 +2435,6 @@ def get_playlist_info():
 # Batches live in memory (same lifecycle as download jobs); after a reload the
 # client re-attaches via /api/library / /api/fetch/list and keeps polling.
 
-FETCH_WORKERS = int(os.environ.get("RECLIP_FETCH_WORKERS", "3"))
-_fetch_executor = ThreadPoolExecutor(max_workers=FETCH_WORKERS)
 fetch_batches = {}
 fetch_lock = threading.Lock()
 FETCH_BATCH_TTL = 3600       # finished batches kept for late polls / reloads
@@ -2257,6 +2460,31 @@ def _expand_playlist_urls(url):
         return [url]
 
 
+def _expand_fetch_urls(urls):
+    """Expand independent playlist/provider roots concurrently, in input order."""
+    roots = [(url or "").strip() for url in urls]
+    roots = [url for url in roots if url]
+    futures = {}
+    for index, url in enumerate(roots):
+        # Ordinary video URLs take the zero-cost path. Only roots that can do
+        # network expansion consume a worker.
+        if "list=" in url or _matching_expander(url) is not None:
+            futures[index] = _fetch_expand_executor.submit(_expand_playlist_urls, url)
+
+    expanded = []
+    for index, url in enumerate(roots):
+        future = futures.get(index)
+        if future is None:
+            expanded.append(url)
+            continue
+        try:
+            children = future.result()
+        except Exception:
+            children = [url]
+        expanded.extend(children or [url])
+    return expanded
+
+
 def _prune_fetch_batches():
     now = time.time()
     for bid, b in list(fetch_batches.items()):
@@ -2274,6 +2502,17 @@ def _fetch_url_item(url):
         "title": "", "thumbnail": "", "duration": None,
         "uploader": "", "formats": [], "id": None, "extractor": "",
         "already_on_server": False, "existing_file": "",
+    }
+
+
+def _fetch_batch_snapshot(batch):
+    """Copy persistence fields while fetch_lock protects the live batch."""
+    return {
+        "id": batch["id"],
+        "kind": batch.get("kind") or "video",
+        "urls": copy.deepcopy(batch["urls"]),
+        "finished": bool(batch.get("finished")),
+        "created_at": batch.get("created_at") or time.time(),
     }
 
 
@@ -2328,12 +2567,14 @@ def _restore_fetch_batches():
                 urls = [u for u in urls if u]
             except Exception:
                 continue
+            items = [_fetch_url_item(u) for u in urls]
             batch = {
                 "id": rid,
-                "urls": [_fetch_url_item(u) for u in urls],
+                "urls": items,
                 "finished": False,
                 "created_at": created_at or time.time(),
                 "kind": "video",
+                "_pending": len(items),
             }
             fetch_batches[rid] = batch
             restored.append(batch)
@@ -2352,8 +2593,8 @@ def _restore_fetch_batches():
             pass
 
     for batch in restored:
-        for idx in range(len(batch["urls"])):
-            _fetch_executor.submit(_process_fetch_url, batch["id"], idx)
+        for target in list(batch["urls"]):
+            _fetch_executor.submit(_process_fetch_url, batch["id"], target)
 
 
 def _start_fetch_batch(urls, kind="video"):
@@ -2361,26 +2602,28 @@ def _start_fetch_batch(urls, kind="video"):
         # Scrape mode: crawl each given page as-is (no playlist expansion).
         expanded = [u for u in ((u or "").strip() for u in urls) if u]
     else:
-        expanded = []
-        for u in urls:
-            expanded.extend(_expand_playlist_urls((u or "").strip()))
-        expanded = [u for u in expanded if u]
+        expanded = _expand_fetch_urls(urls)
 
     with fetch_lock:
         _prune_fetch_batches()
         batch_id = uuid.uuid4().hex[:10]
+        items = [_fetch_url_item(u) for u in expanded]
         batch = {
             "id": batch_id,
             "kind": kind,
-            "urls": [_fetch_url_item(u) for u in expanded],
-            "finished": False,
+            "urls": items,
+            "finished": not expanded,
             "created_at": time.time(),
+            "_pending": len(items),
         }
         fetch_batches[batch_id] = batch
-        n = len(batch["urls"])
-        _persist_fetch_batch(batch)
-    for idx in range(n):
-        _fetch_executor.submit(_process_fetch_url, batch_id, idx)
+        targets = list(batch["urls"])
+        snapshot = _fetch_batch_snapshot(batch)
+    # SQLite must never hold fetch_lock: polls and other workers should not wait
+    # behind JSON serialization or disk I/O.
+    _persist_fetch_batch(snapshot)
+    for target in targets:
+        _fetch_executor.submit(_process_fetch_url, batch_id, target)
     return batch_id
 
 
@@ -2417,73 +2660,110 @@ def _scrape_page(url, max_links=50, max_probe=24, iframe_depth=3):
 
     kept = []
     probed = 0
-    for c in out:
-        if len(kept) >= max_links:
-            break
-        if probed < max_probe:
-            probed += 1
-            if media_verdict(c, referer=url) == 0:
-                continue  # definite placeholder
-        kept.append(c)
+    verdicts = _ordered_media_verdicts(out[:max_probe], referer=url)
+    try:
+        for c in out:
+            if len(kept) >= max_links:
+                break
+            if probed < max_probe:
+                probed += 1
+                _candidate, verdict = next(verdicts)
+                if verdict == 0:
+                    continue  # definite placeholder
+            kept.append(c)
+    finally:
+        verdicts.close()
     return kept
 
 
-def _process_fetch_url(batch_id, idx):
+def _complete_fetch_item(batch_id, target, *, info=None, error=None, replacements=None):
+    """Atomically finish a stable batch item and persist only final state.
+
+    Scrape workers can replace one root with many result cards, shifting list
+    positions while sibling workers are still running. Matching by object
+    identity avoids the old index race. Intermediate writes are unnecessary:
+    restoration intentionally re-runs every unfinished batch, so only the
+    initial checkpoint and the final result improve recovery semantics.
+    """
+    snapshot = None
+    with fetch_lock:
+        batch = fetch_batches.get(batch_id)
+        if not batch:
+            return
+        if target.get("status") != "loading":
+            return
+
+        if replacements is not None and replacements:
+            # Only scrape roots alter list shape, so only that less-common path
+            # needs an identity lookup. Normal metadata completions stay O(1).
+            index = next(
+                (i for i, item in enumerate(batch["urls"]) if item is target), None
+            )
+            if index is None:
+                return
+            batch["urls"][index:index + 1] = replacements
+        elif info is not None:
+            target.update(info)
+            target["status"] = "done"
+        else:
+            target["status"] = "error"
+            target["error"] = error or "Could not fetch item"
+
+        pending = max(0, int(batch.get("_pending", 1)) - 1)
+        batch["_pending"] = pending
+        if pending == 0 and not batch["finished"] and not batch.get("_finalizing"):
+            batch["_finalizing"] = True
+            snapshot = _fetch_batch_snapshot(batch)
+            snapshot["finished"] = True
+
+    if snapshot is not None:
+        try:
+            _persist_fetch_batch(snapshot)
+        finally:
+            # Keep the old visibility guarantee: a poll cannot observe
+            # finished=True until the final recovery checkpoint has completed.
+            with fetch_lock:
+                live = fetch_batches.get(batch_id)
+                if live is batch:
+                    live["finished"] = True
+                    live.pop("_finalizing", None)
+
+
+def _process_fetch_url(batch_id, target):
     try:
         with fetch_lock:
             batch = fetch_batches.get(batch_id)
-            if not batch:
+            if not batch or target.get("status") != "loading":
                 return
-            url = batch["urls"][idx]["url"]
+            url = target["url"]
             kind = batch.get("kind", "video")
 
         if kind == "scrape":
             # Crawl the page and expand it into the individual media links it
             # contains; each becomes a ready, downloadable card.
-            from urllib.parse import urlparse as _urlparse
             found = _scrape_page(url)
             items = []
-            for f in found:
-                item = _fetch_url_item(f)
+            for media_url in found:
+                item = _fetch_url_item(media_url)
                 try:
-                    base = os.path.basename(_urlparse(f).path) or f
+                    base = os.path.basename(urlparse(media_url).path) or media_url
                 except Exception:
-                    base = f
-                item.update({"status": "done", "title": base, "url": f})
+                    base = media_url
+                item.update({"status": "done", "title": base, "url": media_url})
                 items.append(item)
-            with fetch_lock:
-                b = fetch_batches.get(batch_id)
-                if not b:
-                    return
-                if items:
-                    b["urls"][idx:idx + 1] = items
-                else:
-                    b["urls"][idx]["status"] = "error"
-                    b["urls"][idx]["error"] = "No video links found on this page"
-                b["finished"] = all(
-                    x["status"] in ("done", "error") for x in b["urls"])
-                _persist_fetch_batch(b)
+            if items:
+                _complete_fetch_item(batch_id, target, replacements=items)
+            else:
+                _complete_fetch_item(
+                    batch_id, target,
+                    error="No video links found on this page",
+                )
             return
 
         info = fetch_video_info(url)
-        with fetch_lock:
-            b = fetch_batches.get(batch_id)
-            if b:
-                b["urls"][idx].update(info)
-                b["urls"][idx]["status"] = "done"
-    except Exception as e:
-        with fetch_lock:
-            b = fetch_batches.get(batch_id)
-            if b:
-                b["urls"][idx]["status"] = "error"
-                b["urls"][idx]["error"] = str(e)
-    finally:
-        with fetch_lock:
-            b = fetch_batches.get(batch_id)
-            if b:
-                b["finished"] = all(
-                    x["status"] in ("done", "error") for x in b["urls"])
-                _persist_fetch_batch(b)
+        _complete_fetch_item(batch_id, target, info=info)
+    except Exception as exc:
+        _complete_fetch_item(batch_id, target, error=str(exc))
 
 
 @app.route("/api/fetch", methods=["POST"])
