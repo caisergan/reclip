@@ -16,8 +16,10 @@ https://github.com/user-attachments/assets/419d3e50-c933-444b-8cab-a9724986ba05
 - Quality/resolution picker
 - Bulk downloads — paste multiple URLs at once
 - Automatic URL deduplication
+- Multi-account MEGA helper with storage quota checks and transfer progress
+- Automatic distribution of selected files across MEGA accounts by free space
 - Clean, responsive UI — no frameworks, no build step
-- Single Python file backend (~150 lines)
+- Modular Flask backend with persistent download and upload history
 
 ## Quick Start
 
@@ -30,19 +32,61 @@ cd reclip
 
 Open **http://localhost:8899**.
 
-Or with Docker:
+Or with Docker Compose:
 
 ```bash
-docker build -t reclip . && docker run -p 8899:8899 reclip
+docker compose up -d --build
 ```
+
+The image installs the official rclone release because some distribution builds
+omit its MEGA backend. When using `./reclip.sh`, a verified copy is installed
+under `.tools/rclone` automatically if the system rclone has no MEGA support.
 
 ## Usage
 
-1. Paste one or more video URLs into the input box
-2. Choose **MP4** (video) or **MP3** (audio)
-3. Click **Fetch** to load video info and thumbnails
-4. Select quality/resolution if available
-5. Click **Download** on individual videos, or **Download All**
+1. Paste one or more video URLs into the input box.
+2. Choose **Download videos** or **Scrape page**, then select a destination group
+   and the maximum number of concurrent downloads.
+3. Choose **MP4** or **MP3**.
+4. Use the Fetch split button to choose **Fetch only** or **Fetch & download**.
+5. Review fetched cards, choose a quality when available, and download individual,
+   selected, or all ready items.
+6. Browse, filter, redownload, delete, or send completed files to MEGA from the
+   persistent Downloads library.
+
+The previous interface remains available at **http://localhost:8899/legacy**.
+
+## MEGA Helper
+
+1. Open **Downloads** and click the red **M** button.
+2. Add one or more MEGA accounts. ReClip validates each login and reads its live
+   storage quota before saving it.
+3. Select completed files by clicking their cards in the Downloads list.
+4. Choose **Automatic** to spread files across enabled accounts by available
+   storage, or choose one account explicitly.
+5. Set the destination folder and queue the upload. Progress, speed, ETA, errors
+   and cancellation are available in the same panel.
+
+Account metadata and the dedicated rclone config are persisted in
+`<download-dir>/.mega`. Files are written with owner-only permissions. rclone
+password obscuring prevents accidental disclosure but is reversible, so do not
+expose an unauthenticated ReClip instance to the public internet; put it behind
+authentication and HTTPS.
+
+The quota shown by the plugin is the **MEGA storage quota** (`total`, `used`,
+`free`). MEGA/rclone does not provide a reliable account download-transfer
+allowance to this integration, so the UI does not invent or estimate that value.
+
+Optional settings:
+
+| Variable | Default | Purpose |
+|---|---:|---|
+| `RECLIP_MEGA_CONCURRENT` | `2` | Simultaneous MEGA uploads (1–8) |
+| `RECLIP_MEGA_SAFETY_MB` | `16` | Free-space buffer reserved per account |
+| `RECLIP_MEGA_QUOTA_TTL` | `60` | Quota cache duration in seconds |
+| `RECLIP_MEGA_DIR` | `<downloads>/.mega` | Persistent helper state directory |
+| `RECLIP_RCLONE` | `rclone` | Path to a MEGA-enabled rclone binary |
+| `RECLIP_NO_RCLONE_INSTALL` | unset | Disable local rclone auto-install in `reclip.sh` |
 
 ## Supported Sites
 
@@ -52,10 +96,11 @@ YouTube, TikTok, Instagram, Twitter/X, Reddit, Facebook, Vimeo, Twitch, Dailymot
 
 ## Stack
 
-- **Backend:** Python + Flask (~150 lines)
-- **Frontend:** Vanilla HTML/CSS/JS (single file, no build step)
+- **Backend:** Python + Flask
+- **Frontend:** Vanilla HTML/CSS/JS templates (no framework or build step)
 - **Download engine:** [yt-dlp](https://github.com/yt-dlp/yt-dlp) + [ffmpeg](https://ffmpeg.org/)
-- **Dependencies:** 2 (Flask, yt-dlp)
+- **MEGA engine:** [rclone](https://rclone.org/mega/)
+- **Python dependencies:** 2 (Flask, yt-dlp)
 
 ## Disclaimer
 

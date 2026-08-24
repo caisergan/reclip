@@ -30,6 +30,27 @@ if [ -n "$missing" ]; then
     exit 1
 fi
 
+# ReClip's MEGA plugin needs the official rclone build. Some distribution
+# packages (notably Debian's DFSG build) omit the MEGA backend entirely.
+has_mega_backend() {
+    [ -x "$1" ] && "$1" help backends 2>/dev/null | grep -Eq '^[[:space:]]*mega[[:space:]]+Mega$'
+}
+
+if [ -n "${RECLIP_RCLONE:-}" ]; then
+    : # Explicit binary supplied by the operator.
+elif has_mega_backend "$(command -v rclone 2>/dev/null || true)"; then
+    export RECLIP_RCLONE="$(command -v rclone)"
+elif has_mega_backend "$PWD/.tools/rclone"; then
+    export RECLIP_RCLONE="$PWD/.tools/rclone"
+elif [ -z "${RECLIP_NO_RCLONE_INSTALL:-}" ]; then
+    echo "Installing MEGA-enabled rclone locally..."
+    if ./scripts/install-rclone.sh "$PWD/.tools"; then
+        export RECLIP_RCLONE="$PWD/.tools/rclone"
+    else
+        echo "  (rclone installation failed — ReClip will run with the MEGA plugin disabled)"
+    fi
+fi
+
 # Set up venv and install Python deps
 if [ ! -d "venv" ]; then
     echo "Setting up virtual environment..."

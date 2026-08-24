@@ -1,0 +1,68 @@
+{
+  "_readme": [
+    "Site-specific embed providers for ReClip.",
+    "Copy this file to providers.json (next to app.py) and fill in your own hosts.",
+    "providers.json is gitignored, so real domains/endpoints stay out of the source tree.",
+    "",
+    "Docker: providers.json is also dockerignored. Put your file at ./config/providers.json",
+    "  (docker-compose mounts it read-only at /app/config and sets RECLIP_PROVIDERS).",
+    "",
+    "Common fields:",
+    "  name               unique id; also stored as the download's extractor tag",
+    "  kind               resolver type: \"json_stream_api\" | \"signed_file_host\" | \"link_list_page\"",
+    "  url_pattern        regex (case-insensitive) deciding which URLs belong to this provider",
+    "",
+    "\"json_stream_api\" fields:",
+    "  filecode_pattern   regex whose group 1 captures the media id from the URL",
+    "  api_url_page_regex regex run over the embed HTML; group 1 = the API base the page declares",
+    "  api_url_fallback   API endpoint used when the page declares none",
+    "  id_key             payload key that receives the captured id (default: filecode)",
+    "  payload            extra static JSON body fields sent with the request",
+    "  fields             response mapping: media_url / title / thumbnail",
+    "",
+    "\"signed_file_host\" fields (file page -> dl page -> metadata API -> signed CDN URL):",
+    "  dl_link_regex      finds the download-page URL inside the file page HTML",
+    "  direct_dl_pattern  matches a pasted URL that IS already a download-page link (optional)",
+    "  data_id_regex      extracts the asset id from the download page HTML (group 1)",
+    "  meta_api           POST {\"id\": <data_id>} here; expects {mediafiles, path, original}",
+    "  sign_service       GET ?path=<urlencoded path>; expects {token, ex}",
+    "",
+    "\"link_list_page\" fields (album/listing pages expanded into individual links):",
+    "  item_href_regex    matched against absolute hrefs; matching ones become items",
+    "  max_items          safety cap per page (albums fan out fast)"
+  ],
+  "providers": [
+    {
+      "name": "example-stream-api",
+      "kind": "json_stream_api",
+      "url_pattern": "https?://(?:[a-zA-Z0-9.-]+\\.)?embed-example\\.invalid/e/[A-Za-z0-9]+",
+      "filecode_pattern": "/e/([A-Za-z0-9]+)",
+      "api_url_page_regex": "var\\s+apiURL\\s*=\\s*['\\\"]([^'\\\"]+)['\\\"]",
+      "api_url_fallback": "https://embed-example.invalid/api/stream",
+      "id_key": "filecode",
+      "payload": { "device": "web" },
+      "fields": {
+        "media_url": "streaming_url",
+        "title": "title",
+        "thumbnail": "thumbnail"
+      }
+    },
+    {
+      "name": "example-file-host",
+      "kind": "signed_file_host",
+      "url_pattern": "https?://(?:[a-zA-Z0-9.-]+\\.)?files-example\\.invalid/f/[A-Za-z0-9]+|https?://dl\\.files-example\\.invalid/file/\\d+",
+      "dl_link_regex": "https://dl\\.files-example\\.invalid/file/\\d+",
+      "direct_dl_pattern": "^https?://dl\\.files-example\\.invalid/file/\\d+$",
+      "data_id_regex": "download-btn[^>]*data-id=\"(\\d+)\"",
+      "meta_api": "https://dl.files-example.invalid/api/meta",
+      "sign_service": "https://sign.files-example.invalid/sign"
+    },
+    {
+      "name": "example-album",
+      "kind": "link_list_page",
+      "url_pattern": "https?://(?:[a-zA-Z0-9.-]+\\.)?files-example\\.invalid/a/[A-Za-z0-9]+",
+      "item_href_regex": "/f/[A-Za-z0-9]{6,}$",
+      "max_items": 150
+    }
+  ]
+}

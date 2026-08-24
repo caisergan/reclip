@@ -13,3 +13,5 @@ Dockerfile
 .env.*
 .vscode
 .idea
+providers.json
+.tools
