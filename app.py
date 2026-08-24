@@ -1783,6 +1783,11 @@ def index():
     return render_template("index.html")
 
 
+@app.route("/legacy")
+def legacy_index():
+    return render_template("legacy.html")
+
+
 def fetch_video_info(url):
     """Extract normalized video info for one URL.
 

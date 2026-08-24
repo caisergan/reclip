@@ -1,705 +1,1708 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ReClip — Free Media Downloader</title>
-  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <style>
-    :root {
-      --bg: #f4f1eb;
-      --fg: #3a3a38;
-      --accent: #e85d2a;
-      --accent-hover: #d04e1f;
-      --muted: #9c9889;
-      --card: #fff;
-      --card-border: #e2ded6;
-      --success: #2d8a4e;
-      --error: #c43d3d;
-      --radius: 14px;
-      --shimmer: linear-gradient(90deg, #ebe8e2 25%, #f0ede7 50%, #ebe8e2 75%);
-    }
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ReClip</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%2309090b'/%3E%3Cpath d='M19 17h17c10 0 16 5 16 14 0 7-4 11-10 13l11 13H40L30 45v12H19V17Zm11 9v11h6c4 0 6-2 6-6s-2-5-6-5h-6Z' fill='white'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg: #F4F5F7;
+    --bg-subtle: #F8F9FB;
+    --bg-muted: #EEF0F3;
+    --card: #FFFFFF;
+    --border: #E2E4E9;
+    --border-strong: #D3D6DD;
+    --fg: #17181B;
+    --fg-secondary: #292B30;
+    --muted: #6F747D;
+    --muted-2: #9CA2AC;
+    --accent: #09090B;
+    --accent-hover: #202024;
+    --accent-fg: #FFFFFF;
+    --focus: #5B63E8;
+    --radius-xl: 16px;
+    --radius-lg: 12px;
+    --radius-md: 10px;
+    --radius-sm: 8px;
+    --radius-full: 999px;
+    --shadow-card: 0 1px 2px rgba(35,35,38,0.04), 0 4px 12px rgba(35,35,38,0.04);
+    --shadow-float: 0 8px 32px rgba(35,35,38,0.10), 0 2px 8px rgba(35,35,38,0.06);
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:100%;height:100%;overflow:hidden}
+  html{scroll-behavior:smooth}
+  body{
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    background:
+      radial-gradient(720px 440px at 8% -8%, rgba(91,99,232,0.11), transparent 66%),
+      radial-gradient(760px 460px at 96% 0%, rgba(14,165,233,0.08), transparent 64%),
+      var(--bg);
+    color: var(--fg);
+    -webkit-font-smoothing:antialiased;
+    line-height:1.5;
+    min-height:100vh;
+  }
+  body::after{
+    content:''; position:fixed; inset:0; pointer-events:none; opacity:0.018;
+    background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.92' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    background-size:160px;
+  }
+  .dot{width:6px;height:6px;border-radius:50%;background:#22c55e;box-shadow:0 0 0 3px rgba(34,197,94,0.12)}
+  .icon-btn{
+    width:32px;height:32px; border-radius:var(--radius-sm);
+    border:1px solid var(--border); background:var(--card);
+    display:inline-flex; align-items:center; justify-content:center;
+    color:var(--muted); cursor:pointer; transition:all .15s;
+  }
+  .icon-btn:hover{border-color:var(--border-strong); color:var(--fg); background:var(--bg-muted)}
+  .icon-btn.active{border-color:var(--border-strong); color:var(--fg); background:var(--bg-muted)}
+  .icon-btn svg{width:16px;height:16px}
+  /* Page */
+  .page{
+    width:100%; max-width:1380px; height:100dvh; margin:0 auto;
+    padding:24px 20px;
+    display:grid; grid-template-columns:minmax(0,1fr) 560px;
+    gap:20px; align-items:stretch; overflow:hidden;
+  }
+  .main{height:100%; min-width:0; min-height:0; display:flex; flex-direction:column; gap:18px; overflow:hidden}
+  .hero{padding:6px 2px 2px; position:relative}
+  .hero h1{font-size:30px; font-weight:700; letter-spacing:-0.03em; line-height:1.05; color:var(--fg)}
+  .hero h1::after{content:''; display:block; width:32px; height:3px; background:linear-gradient(90deg, #5B63E8, #38A7D8); border-radius:999px; margin-top:10px}
+  /* Panel */
+  .panel{
+    background:var(--card); border:1px solid var(--border); border-radius:var(--radius-xl);
+    box-shadow:0 1px 2px rgba(17,24,39,0.03), 0 12px 32px rgba(17,24,39,0.05);
+  }
+  .dropzone-panel{padding:12px; display:flex; flex-direction:column; gap:10px}
+  .dropzone-head{display:flex; align-items:center; justify-content:space-between; gap:12px}
+  .header-options{display:flex; align-items:center; gap:7px; margin-left:auto}
+  .header-select{min-width:0}
+  .header-select.group-select{width:146px}
+  .header-select.concurrent-select{width:120px}
+  .header-select .select-trigger{height:38px}
+  .header-select.group-select .select-menu{width:210px}
+  .header-select.concurrent-select .select-menu{width:132px;left:auto;right:0}
+  .mode-segment{
+    display:inline-flex; align-items:center; height:38px; background:var(--bg-muted); border-radius:var(--radius-full); padding:3px; gap:2px; isolation:isolate;
+  }
+  .mode-opt{
+    height:32px; font-size:12.5px; line-height:1; font-weight:500; padding:0 14px; border-radius:var(--radius-full);
+    border:1px solid transparent; background:transparent; color:var(--muted); cursor:pointer;
+    transition:background-color .15s,color .15s,border-color .15s,box-shadow .15s;
+  }
+  .mode-opt.active{background:var(--card); color:var(--fg); box-shadow:0 1px 3px rgba(0,0,0,0.06); border-color:var(--border)}
+  .drop-area{
+    position:relative;
+    border:1.5px solid var(--border-strong);
+    border-radius:var(--radius-lg);
+    background:linear-gradient(180deg, var(--bg-subtle) 0%, #FFFFFF 100%);
+    transition: all .18s;
+    overflow:hidden;
+  }
+  .drop-area.drag{border-color:var(--focus); background:var(--card); box-shadow:0 0 0 3px rgba(91,99,232,0.12)}
+  .drop-area:focus-within{border-color:var(--focus); background:var(--card); box-shadow:0 0 0 3px rgba(91,99,232,0.10)}
+  .drop-area textarea{
+    width:100%; min-height:104px; padding:38px 14px 36px;
+    border:none; background:transparent; outline:none; resize:none;
+    font-family:'JetBrains Mono', monospace; font-size:13.5px; line-height:1.6; color:var(--fg);
+  }
+  .drop-area textarea::placeholder{color:var(--muted-2)}
+  .area-actions{
+    position:absolute; top:8px; right:8px; display:flex; gap:6px; opacity:.68; transition:opacity .15s;
+  }
+  .area-actions:hover,.area-actions:focus-within{opacity:1}
+  .mini-btn{
+    font-size:11.5px; font-weight:500; padding:5px 10px; border-radius:999px;
+    border:1px solid var(--border); background:var(--card); color:var(--muted);
+    cursor:pointer; display:inline-flex; align-items:center; gap:5px; transition:all .15s;
+  }
+  .mini-btn:hover{border-color:var(--accent); color:var(--fg); background:var(--card)}
+  .mini-btn svg{width:13px;height:13px}
+  .drop-footer{
+    position:absolute; left:10px; right:10px; bottom:8px;
+    display:flex; align-items:center; justify-content:space-between; gap:10px; pointer-events:none;
+  }
 
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-
-    body {
-      font-family: 'DM Mono', monospace;
-      background: var(--bg);
-      color: var(--fg);
-      min-height: 100vh;
-      overflow-x: hidden;
-    }
-
-    body::after {
-      content: '';
-      position: fixed;
-      inset: 0;
-      opacity: 0.03;
-      pointer-events: none;
-      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
-      background-size: 128px;
-    }
-
-    .page {
-      max-width: 620px;
-      margin: 0 auto;
-      padding: 60px 24px 80px;
-    }
-
-    .brand { margin-bottom: 48px; }
-    .brand h1 {
-      font-family: 'Instrument Serif', serif;
-      font-size: 4.2rem;
-      font-weight: 400;
-      letter-spacing: -0.03em;
-      line-height: 1;
-      color: var(--fg);
-    }
-    .brand h1 em { font-style: italic; color: var(--accent); }
-    .brand p {
-      margin-top: 10px;
-      font-size: 0.78rem;
-      color: var(--muted);
-      letter-spacing: 0.04em;
-      text-transform: uppercase;
-    }
-
-    textarea {
-      width: 100%;
-      padding: 18px 20px;
-      border: 1.5px solid var(--card-border);
-      border-radius: var(--radius);
-      background: var(--card);
-      color: var(--fg);
-      font-family: 'DM Mono', monospace;
-      font-size: 0.88rem;
-      outline: none;
-      resize: none;
-      min-height: 56px;
-      transition: border-color 0.25s, box-shadow 0.25s;
-      margin-bottom: 6px;
-    }
-    textarea:focus {
-      border-color: var(--accent);
-      box-shadow: 0 0 0 3px rgba(232, 93, 42, 0.08);
-    }
-    textarea::placeholder { color: var(--muted); }
-
-    .hint {
-      font-size: 0.7rem;
-      color: var(--muted);
-      margin-bottom: 20px;
-      letter-spacing: 0.02em;
-    }
-
-    .controls {
-      display: flex;
-      gap: 10px;
-      margin-bottom: 6px;
-      align-items: center;
-    }
-    .pill-group {
-      display: flex;
-      border: 1.5px solid var(--card-border);
-      border-radius: 10px;
-      overflow: hidden;
-      background: var(--card);
-    }
-    .pill {
-      padding: 9px 18px;
-      font-family: 'DM Mono', monospace;
-      font-size: 0.76rem;
-      border: none;
-      background: transparent;
-      color: var(--muted);
-      cursor: pointer;
-      transition: all 0.2s;
-      letter-spacing: 0.03em;
-      text-transform: uppercase;
-    }
-    .pill.active { background: var(--fg); color: var(--bg); }
-    .pill:not(.active):hover { color: var(--fg); }
-
-    .fetch-btn {
-      flex: 1;
-      padding: 10px 20px;
-      border: none;
-      border-radius: 10px;
-      background: var(--accent);
-      color: #fff;
-      font-family: 'DM Mono', monospace;
-      font-size: 0.82rem;
-      font-weight: 500;
-      cursor: pointer;
-      transition: background 0.2s, transform 0.1s;
-      letter-spacing: 0.04em;
-      text-transform: uppercase;
-    }
-    .fetch-btn:hover { background: var(--accent-hover); }
-    .fetch-btn:active { transform: scale(0.98); }
-    .fetch-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
-
-    /* Cards */
-    .cards { margin-top: 24px; }
-
-    .card {
-      display: flex;
-      gap: 14px;
-      border: 1.5px solid var(--card-border);
-      border-radius: var(--radius);
-      background: var(--card);
-      padding: 14px;
-      margin-bottom: 10px;
-      animation: slideUp 0.4s cubic-bezier(0.16, 1, 0.3, 1);
-    }
-    @keyframes slideUp {
-      from { opacity: 0; transform: translateY(12px); }
-      to { opacity: 1; transform: translateY(0); }
-    }
-
-    .card-thumb {
-      width: 120px;
-      min-width: 120px;
-      height: 80px;
-      border-radius: 8px;
-      overflow: hidden;
-      background: var(--card-border);
-      flex-shrink: 0;
-      position: relative;
-    }
-    .card-thumb img {
-      width: 100%;
-      height: 100%;
-      object-fit: cover;
-      display: block;
-    }
-    /* No-thumbnail icon */
-    .card-thumb .no-thumb {
-      width: 100%;
-      height: 100%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      color: var(--muted);
-    }
-    .card-thumb .no-thumb svg {
-      width: 28px;
-      height: 28px;
-      opacity: 0.5;
-    }
-
-    /* Shimmer skeleton for loading state */
-    .card-thumb.loading {
-      background: var(--shimmer);
-      background-size: 200% 100%;
-      animation: shimmer 1.5s infinite;
-    }
-    .skeleton-line {
-      height: 12px;
-      border-radius: 4px;
-      background: var(--shimmer);
-      background-size: 200% 100%;
-      animation: shimmer 1.5s infinite;
-      margin-bottom: 6px;
-    }
-    .skeleton-line.short { width: 40%; height: 10px; }
-    .skeleton-line.medium { width: 75%; }
-    @keyframes shimmer {
-      0% { background-position: 200% 0; }
-      100% { background-position: -200% 0; }
-    }
-
-    .card-body {
-      flex: 1;
-      min-width: 0;
-      display: flex;
-      flex-direction: column;
-      justify-content: center;
-    }
-    .card-title {
-      font-family: 'Instrument Serif', serif;
-      font-size: 1rem;
-      line-height: 1.3;
-      color: var(--fg);
-      margin-bottom: 2px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-    .card-meta {
-      font-size: 0.68rem;
-      color: var(--muted);
-      letter-spacing: 0.03em;
-      text-transform: uppercase;
-      margin-bottom: 8px;
-    }
-
-    .card-actions {
-      display: flex;
-      gap: 6px;
-      align-items: center;
-      flex-wrap: wrap;
-    }
-
-    .card-dl-btn {
-      padding: 6px 14px;
-      border: none;
-      border-radius: 7px;
-      background: var(--fg);
-      color: var(--bg);
-      font-family: 'DM Mono', monospace;
-      font-size: 0.7rem;
-      font-weight: 500;
-      cursor: pointer;
-      transition: all 0.2s;
-      letter-spacing: 0.03em;
-      text-transform: uppercase;
-    }
-    .card-dl-btn:hover { background: #2d2d2a; }
-    .card-dl-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-    .card-dl-btn.done { background: var(--success); color: #fff; }
-    .card-dl-btn.error { background: var(--error); color: #fff; }
-
-    .card-status {
-      font-size: 0.68rem;
-      color: var(--muted);
-    }
-    .card-status.downloading { color: var(--accent); }
-    .card-status.done { color: var(--success); }
-    .card-status.error { color: var(--error); }
-
-    .q-chip {
-      padding: 4px 10px;
-      border: 1.5px solid var(--card-border);
-      border-radius: 6px;
-      background: transparent;
-      color: var(--muted);
-      font-family: 'DM Mono', monospace;
-      font-size: 0.65rem;
-      cursor: pointer;
-      transition: all 0.2s;
-    }
-    .q-chip.active {
-      border-color: var(--fg);
-      color: var(--fg);
-      background: rgba(26,26,24,0.04);
-    }
-    .q-chip:hover:not(.active) { border-color: var(--muted); }
-
-    /* Error card */
-    .card.card-error {
-      border-color: rgba(196, 61, 61, 0.2);
-      background: rgba(196, 61, 61, 0.03);
-    }
-    .card-error-icon {
-      width: 100%;
-      height: 100%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      background: rgba(196, 61, 61, 0.08);
-      color: var(--error);
-    }
-    .card-error-icon svg {
-      width: 24px;
-      height: 24px;
-    }
-    .card-error-msg {
-      font-size: 0.72rem;
-      color: var(--error);
-      margin-top: 2px;
-      line-height: 1.4;
-    }
-    .card-error-url {
-      font-size: 0.65rem;
-      color: var(--muted);
-      word-break: break-all;
-      margin-top: 4px;
-    }
-
-    /* Download all bar */
-    .dl-all-bar {
-      display: flex;
-      gap: 10px;
-      margin-top: 16px;
-    }
-    .dl-all-btn {
-      flex: 1;
-      padding: 12px;
-      border: none;
-      border-radius: 10px;
-      background: var(--fg);
-      color: var(--bg);
-      font-family: 'DM Mono', monospace;
-      font-size: 0.82rem;
-      font-weight: 500;
-      cursor: pointer;
-      transition: all 0.2s;
-      letter-spacing: 0.04em;
-      text-transform: uppercase;
-    }
-    .dl-all-btn:hover { background: #2d2d2a; }
-    .dl-all-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-
-    .spin {
-      display: inline-block;
-      width: 10px; height: 10px;
-      border: 2px solid currentColor;
-      border-right-color: transparent;
-      border-radius: 50%;
-      animation: spin 0.6s linear infinite;
-      vertical-align: middle;
-    }
-    @keyframes spin { to { transform: rotate(360deg); } }
-
-    .footer {
-      margin-top: 48px;
-      text-align: center;
-      font-size: 0.68rem;
-      color: var(--muted);
-      letter-spacing: 0.05em;
-      text-transform: uppercase;
-      line-height: 1.8;
-    }
-
-    /* Mobile */
-    @media (max-width: 500px) {
-      .brand h1 { font-size: 3rem; }
-      .page { padding: 40px 16px 60px; }
-      .card { flex-direction: column; gap: 10px; }
-      .card-thumb {
-        width: 100%;
-        min-width: unset;
-        height: 160px;
-      }
-      .card-title { white-space: normal; }
-      .controls { flex-wrap: wrap; }
-      .fetch-btn { width: 100%; }
-    }
-  </style>
+  .kbd-hint{font-size:10.5px; color:var(--muted-2); font-family:'JetBrains Mono', monospace; display:flex; align-items:center; gap:4px}
+  .kbd-hint kbd{font-family:'JetBrains Mono', monospace; font-size:10px; border:1px solid var(--border); background:var(--card); padding:1px 5px; border-radius:6px; border-bottom-width:2px; color:var(--muted)}
+  .link-badge{
+    font-size:11px; font-weight:600; letter-spacing:0.01em;
+    font-family:'JetBrains Mono', monospace;
+    background:var(--accent); color:#fff; padding:5px 11px; border-radius:var(--radius-full);
+    display:inline-flex; align-items:center; gap:6px;
+    opacity:0; transform:translateY(4px); transition:all .2s; pointer-events:auto;
+    box-shadow:0 2px 8px rgba(62,62,68,0.14);
+  }
+  .link-badge.show{opacity:1; transform:translateY(0)}
+  .link-badge .b-dot{width:6px;height:6px;border-radius:50%;background:#4ade80}
+  /* Controls */
+  .ctl-row{display:flex; align-items:center; gap:8px}
+  .seg{
+    display:inline-flex; background:var(--bg-muted); border-radius:var(--radius-md); padding:3px; gap:2px;
+  }
+  .seg button{
+    font-family:'JetBrains Mono', monospace; font-size:11px; font-weight:600; letter-spacing:0.05em; text-transform:uppercase;
+    padding:8px 14px; border-radius:7px; border:1px solid transparent; background:transparent; color:var(--muted); cursor:pointer; transition:all .15s;
+  }
+  .seg button.active{background:var(--accent); color:#fff; border-color:var(--accent)}
+  .cta{
+    flex:1; height:40px; border-radius:var(--radius-md); border:1px solid var(--accent); background:var(--accent); color:var(--accent-fg);
+    font-family:'Inter', sans-serif; font-size:13px; font-weight:600; cursor:pointer;
+    display:inline-flex; align-items:center; justify-content:center; gap:8px;
+    transition: all .15s; box-shadow:0 2px 10px rgba(10,10,11,0.14);
+  }
+  .cta:hover{background:var(--accent-hover); border-color:var(--accent-hover); transform:translateY(-1px); box-shadow:0 8px 20px rgba(10,10,11,0.18)}
+  .cta:active{transform:translateY(0)}
+  .cta:disabled{opacity:0.5; cursor:not-allowed; transform:none; box-shadow:none}
+  .cta svg{width:14px;height:14px}
+  .split-cta{position:relative; flex:1; min-width:0; display:flex}
+  .split-cta>.cta{border-radius:var(--radius-md) 0 0 var(--radius-md)}
+  .split-cta>.cta:hover{transform:none}
+  .fetch-menu-toggle{width:40px; height:40px; flex:none; display:inline-flex; align-items:center; justify-content:center; border:1px solid var(--accent); border-left-color:rgba(255,255,255,.22); border-radius:0 var(--radius-md) var(--radius-md) 0; background:var(--accent); color:#fff; cursor:pointer; transition:all .15s}
+  .fetch-menu-toggle:hover{background:var(--accent-hover);border-color:var(--accent-hover);border-left-color:rgba(255,255,255,.22)}
+  .fetch-menu-toggle:disabled{opacity:.5;cursor:not-allowed}
+  .fetch-menu-toggle svg{width:14px;height:14px;transition:transform .15s}
+  .split-cta.open .fetch-menu-toggle svg{transform:rotate(180deg)}
+  .fetch-action-menu{position:absolute; z-index:35; top:calc(100% + 6px); right:0; width:210px; padding:5px; border:1px solid var(--border); border-radius:11px; background:var(--card); box-shadow:0 16px 38px rgba(17,24,39,.16),0 3px 10px rgba(17,24,39,.07)}
+  .fetch-action-menu[hidden]{display:none}
+  .fetch-action-menu button{width:100%; display:flex; align-items:center; gap:9px; padding:8px; border:0; border-radius:8px; background:transparent; color:var(--fg); text-align:left; cursor:pointer}
+  .fetch-action-menu button:hover,.fetch-action-menu button.active{background:var(--bg-muted)}
+  .fetch-action-menu svg{width:16px;height:16px;flex:none;color:var(--muted)}
+  .fetch-action-copy{display:flex;flex-direction:column;gap:1px}
+  .fetch-action-copy b{font-size:11.5px;font-weight:600}
+  .fetch-action-copy small{font-size:9.5px;color:var(--muted)}
+  .switch{display:inline-flex; align-items:center; gap:8px; cursor:pointer; user-select:none}
+  .auto-compact{height:38px; padding:0 11px 0 7px; border:1px solid var(--border); border-radius:999px; background:var(--card); white-space:nowrap}
+  .switch input{position:absolute; opacity:0}
+  .track{width:32px;height:18px;border-radius:20px;background:#E4E4E7; position:relative; transition:background .2s}
+  .thumb{position:absolute; top:1px; left:1px; width:14px;height:14px;border-radius:50%; background:#fff; box-shadow:0 1px 3px rgba(0,0,0,0.18); transition:transform .2s}
+  .switch input:checked + .track{background:var(--accent)}
+  .switch input:checked + .track .thumb{transform:translateX(14px)}
+  .switch-label{font-size:11.5px; font-weight:500; color:var(--fg)}
+  .compact-field{height:38px; min-width:0; display:inline-flex; align-items:center; gap:6px; padding:0 8px; border:1px solid var(--border); border-radius:var(--radius-md); background:var(--card); color:var(--muted)}
+  .compact-field svg{width:15px;height:15px;flex:none}
+  .compact-field select{height:100%; min-width:76px; max-width:112px; padding:0 20px 0 0; border:0; outline:0; appearance:none; color:var(--fg); background:transparent url("data:image/svg+xml,%3Csvg width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236F747D' stroke-width='2' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='m7 10 5 5 5-5'/%3E%3C/svg%3E") no-repeat right center; font:500 11.5px 'Inter',sans-serif; cursor:pointer}
+  .compact-field.concurrent select{min-width:34px;max-width:40px}
+  .compact-field:focus-within{border-color:var(--focus);box-shadow:0 0 0 3px rgba(91,99,232,.09)}
+  /* Examples */
+  .examples{display:flex; align-items:center; gap:5px; padding:0 2px}
+  .examples span{font-size:10px; color:var(--muted-2); font-weight:500}
+  .examples button{
+    font-size:10px; font-weight:500; padding:3px 7px; border-radius:999px;
+    border:1px solid var(--border); background:rgba(255,255,255,.86); color:var(--muted); cursor:pointer; transition:all .15s;
+  }
+  .examples button:hover{border-color:var(--accent); color:var(--accent); background:var(--bg-subtle)}
+  /* Cards header */
+  .cards-head{
+    display:flex; align-items:center; justify-content:space-between; gap:12px;
+    padding:4px 2px 0;
+  }
+  .cards-head h3{font-size:12px; font-weight:600; letter-spacing:0.05em; text-transform:uppercase; color:var(--muted); display:flex; align-items:center; gap:8px}
+  .cards-head h3 input{accent-color:var(--accent)}
+  .cards-head .actions{display:flex; gap:8px; align-items:center}
+  .bulk-info{font-size:11px; font-weight:500; color:var(--accent); background:rgba(62,62,68,0.08); padding:4px 8px; border-radius:999px}
+  .ghost-btn{
+    font-size:12px; font-weight:500; padding:6px 11px; border-radius:8px; border:1px solid var(--border); background:var(--card); color:var(--muted); cursor:pointer; transition:all .15s;
+  }
+  .ghost-btn:hover{border-color:var(--border-strong); color:var(--fg)}
+  .ghost-btn.primary{background:var(--accent); color:#fff; border-color:var(--accent)}
+  .ghost-btn.primary:hover{background:var(--accent-hover); border-color:var(--accent-hover)}
+  /* Cards */
+  .cards{flex:1; min-height:0; display:flex; flex-direction:column; gap:10px; overflow-y:auto; overscroll-behavior:contain; scrollbar-width:thin; padding-right:4px}
+  .cards::-webkit-scrollbar{width:6px}
+  .cards::-webkit-scrollbar-thumb{background:var(--border-strong);border-radius:999px}
+  .card{
+    display:flex; gap:14px; padding:12px; background:var(--card); border:1px solid var(--border); border-radius:var(--radius-lg);
+    transition:all .15s; animation: in .3s cubic-bezier(.16,1,.3,1); position:relative;
+  }
+  .card:hover{border-color:var(--border-strong); box-shadow:var(--shadow-card)}
+  .card.downloading{border-color:var(--accent); box-shadow:0 0 0 1px rgba(62,62,68,0.08)}
+  .card.selected{border-color:var(--accent); background:#FAFAFB; box-shadow:0 0 0 1px rgba(62,62,68,0.08)}
+  .card.error{border-color:#FECACA; background:#FFFBFB}
+  @keyframes in{from{opacity:0; transform:translateY(6px)} to{opacity:1; transform:translateY(0)}}
+  .card-check{position:absolute; top:10px; left:10px; width:18px;height:18px; accent-color:var(--accent)}
+  .thumb-wrap{
+    width:148px; min-width:148px; height:84px; border-radius:8px; overflow:hidden; background:var(--bg-muted); position:relative; flex-shrink:0;
+  }
+  .thumb-wrap img{width:100%;height:100%;object-fit:cover;display:block}
+  .thumb-wrap .ph{width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:var(--muted-2); background:linear-gradient(135deg,#F4F4F5,#EDEDEF)}
+  .thumb-wrap .ph svg{width:22px;height:22px}
+  .dur-badge{
+    position:absolute; right:6px; bottom:6px; background:rgba(35,35,38,0.82); color:#fff; font-size:10px; font-weight:600; font-family:'JetBrains Mono', monospace;
+    padding:2px 6px; border-radius:6px;
+  }
+  .card-body{flex:1; min-width:0; display:flex; flex-direction:column; gap:3px; padding-left:2px}
+  .card-body.has-check{padding-left:18px}
+  .card-title{font-size:13.5px; font-weight:600; line-height:1.35; color:var(--fg); display:-webkit-box; -webkit-line-clamp:1; -webkit-box-orient:vertical; overflow:hidden}
+  .card-meta{font-size:11px; font-family:'JetBrains Mono', monospace; color:var(--muted)}
+  .card-foot{margin-top:6px; display:flex; align-items:center; gap:6px; flex-wrap:wrap}
+  .btn-sm{
+    font-size:11.5px; font-weight:550; padding:6px 12px; border-radius:8px; border:1px solid transparent; cursor:pointer; transition:all .15s; font-family:'Inter', sans-serif;
+  }
+  .btn-primary{background:var(--accent); color:#fff; border-color:var(--accent)}
+  .btn-primary:hover{background:var(--accent-hover); border-color:var(--accent-hover)}
+  .btn-ghost{background:transparent; border:1px solid var(--border); color:var(--muted)}
+  .btn-ghost:hover{border-color:var(--accent); color:var(--fg)}
+  .q-group{display:inline-flex; gap:4px; margin-left:2px}
+  .q{
+    font-size:10.5px; font-weight:600; font-family:'JetBrains Mono', monospace;
+    padding:4px 8px; border-radius:6px; border:1px solid var(--border); background:transparent; color:var(--muted); cursor:pointer;
+  }
+  .q.active{border-color:var(--accent); background:var(--accent); color:#fff}
+  .progress{width:100%; margin-top:6px}
+  .track-bg{height:4px; border-radius:999px; background:var(--bg-muted); overflow:hidden}
+  .fill{height:100%; background:var(--accent); border-radius:999px; transition:width .3s}
+  .fill.queued{background:var(--muted-2)}
+  .fill.processing{background:repeating-linear-gradient(90deg, var(--accent) 0 12px, #5a5a62 12px 24px); background-size:200% 100%; animation: sh 1s linear infinite}
+  @keyframes sh{to{background-position:200% 0}}
+  .progress-meta{display:flex; justify-content:space-between; gap:8px; font-size:10.5px; font-family:'JetBrains Mono', monospace; color:var(--muted); margin-top:5px}
+  .progress-meta b{color:var(--fg); font-weight:600}
+  .error-text{font-size:12px; color:#DC2626; line-height:1.4}
+  .empty-cards{
+    padding:40px 20px; text-align:center; border:1px dashed var(--border-strong); border-radius:var(--radius-lg); background:var(--bg-subtle);
+    display:flex; flex-direction:column; align-items:center; gap:10px; color:var(--muted);
+  }
+  .empty-cards svg{width:32px;height:32px; color:var(--muted-2)}
+  .empty-cards h4{font-size:13px; font-weight:600; color:var(--fg)}
+  .empty-cards p{font-size:12px; max-width:280px; line-height:1.5}
+  /* Library */
+  .library{
+    position:relative; min-height:0; height:100%;
+    background:var(--card); border:1px solid var(--border); border-radius:var(--radius-xl);
+    box-shadow:0 1px 2px rgba(17,24,39,0.03), 0 12px 32px rgba(17,24,39,0.05);
+    display:flex; flex-direction:column; overflow:hidden;
+  }
+  .lib-head{padding:12px 14px 10px; border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; background:var(--card)}
+  .lib-head-left{display:flex; align-items:center; gap:8px}
+  .lib-head-right{display:flex; align-items:center; gap:10px}
+  .lib-total{font-size:11px; font-weight:700; font-family:'JetBrains Mono', monospace; color:var(--fg); background:var(--bg-muted); border:1px solid var(--border); padding:3px 8px; border-radius:999px; white-space:nowrap}
+  .lib-total b{color:var(--accent)}
+  .lib-summary{display:flex; align-items:center; justify-content:space-between; gap:10px; padding:8px 12px; background:var(--bg-subtle); border-top:1px solid var(--border); font-size:11px; font-family:'JetBrains Mono', monospace; color:var(--muted)}
+  .lib-summary b{color:var(--fg); font-weight:600}
+  .lib-summary .muted{color:var(--muted-2)}
+  .lib-title{font-size:14px; font-weight:600; letter-spacing:-0.02em}
+  .count{
+    font-size:11px; font-weight:600; font-family:'JetBrains Mono', monospace;
+    background:var(--bg-muted); border:1px solid var(--border); color:var(--muted);
+    padding:2px 7px; border-radius:var(--radius-full);
+  }
+  .lib-actions{position:relative; margin-left:auto; display:flex; gap:6px}
+  .lib-tools{padding:11px 12px; border-bottom:1px solid var(--border); display:flex; flex-direction:column; gap:10px; background:var(--bg-subtle)}
+  .lib-tools[hidden]{display:none}
+  .search-wrap{position:relative; display:flex; gap:6px}
+  .search-wrap .sbox{position:relative; flex:1}
+  .search-wrap .sbox > svg{position:absolute; left:10px; top:50%; transform:translateY(-50%); width:14px;height:14px; color:var(--muted-2); pointer-events:none}
+  .search{
+    width:100%; height:34px; padding:0 12px 0 32px;
+    border:1px solid var(--border); border-radius:var(--radius-md); background:var(--card);
+    font-family:'Inter', sans-serif; font-size:13px; color:var(--fg); outline:none; transition:all .15s;
+  }
+  .search:focus{border-color:var(--focus); box-shadow:0 0 0 3px rgba(91,99,232,0.10)}
+  .search::placeholder{color:var(--muted-2)}
+  .view-toggle{display:flex; background:var(--card); border:1px solid var(--border); border-radius:8px; overflow:hidden}
+  .view-toggle button{width:34px;height:34px; border:none; background:transparent; color:var(--muted); cursor:pointer; display:inline-flex; align-items:center; justify-content:center}
+  .view-toggle button.active{background:var(--accent); color:#fff}
+  .view-toggle svg{position:static; width:16px; height:16px; transform:none; color:inherit}
+  .filters{display:grid; grid-template-columns:1fr 1fr; gap:6px}
+  .select-box{position:relative; min-width:0}
+  .native-select{display:none}
+  .select-trigger{width:100%; height:34px; padding:0 9px; display:flex; align-items:center; gap:8px; border:1px solid var(--border); border-radius:8px; background:var(--card); color:var(--fg); font:500 11.5px 'Inter',sans-serif; cursor:pointer; text-align:left; transition:border-color .15s,box-shadow .15s}
+  .select-trigger:hover{border-color:var(--border-strong)}
+  .select-box.open .select-trigger{border-color:var(--focus); box-shadow:0 0 0 3px rgba(91,99,232,.09)}
+  .select-trigger .select-icon,.select-option .select-icon{width:15px; height:15px; display:inline-flex; align-items:center; justify-content:center; flex:none; color:var(--muted)}
+  .select-trigger .select-icon svg,.select-option .select-icon svg{width:15px; height:15px; position:static; transform:none}
+  .select-label{min-width:0; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .select-chevron{width:13px; height:13px; flex:none; color:var(--muted); transition:transform .15s}
+  .select-box.open .select-chevron{transform:rotate(180deg)}
+  .select-menu{position:absolute; z-index:30; left:0; right:0; top:calc(100% + 5px); display:none; padding:5px; border:1px solid var(--border); border-radius:10px; background:var(--card); box-shadow:0 16px 36px rgba(17,24,39,.14),0 3px 10px rgba(17,24,39,.08)}
+  .select-box.open .select-menu{display:flex; flex-direction:column; gap:2px; animation:selectIn .14s ease-out}
+  @keyframes selectIn{from{opacity:0; transform:translateY(-3px)}to{opacity:1; transform:none}}
+  .select-option{width:100%; min-height:32px; padding:6px 7px; display:flex; align-items:center; gap:8px; border:0; border-radius:7px; background:transparent; color:var(--fg); font:500 11px 'Inter',sans-serif; text-align:left; cursor:pointer}
+  .select-option:hover,.select-option[aria-selected=true]{background:var(--bg-muted)}
+  .select-option[aria-selected=true]{font-weight:600}
+  .select-option .check{display:none}
+  .lib-list{flex:1; min-height:0; overflow-y:auto; overscroll-behavior:contain; padding:8px; display:flex; flex-direction:column; gap:6px; scrollbar-width:thin}
+  .lib-list::-webkit-scrollbar{width:6px}
+  .lib-list::-webkit-scrollbar-thumb{background:var(--border-strong); border-radius:999px}
+  .lib-list.grid{ display:grid; grid-template-columns:1fr 1fr; gap:8px}
+  .lib-list.grid .lib-item{flex-direction:column; align-items:stretch; padding:8px}
+  .lib-list.grid .lib-thumb{width:100%; min-width:0; height:90px}
+  .lib-list.grid .lib-acts{justify-content:flex-end}
+  .lib-item{
+    display:flex; gap:10px; padding:8px 10px; border:1px solid var(--border); border-radius:10px; background:var(--card);
+    transition:all .15s; align-items:center; position:relative; cursor:pointer;
+  }
+  .lib-item:hover{border-color:var(--border-strong); box-shadow:var(--shadow-card)}
+  .lib-item:focus-visible{outline:none; border-color:var(--focus); box-shadow:0 0 0 3px rgba(91,99,232,.10)}
+  .lib-item.mega-selected{border-color:rgba(217,39,46,0.40); background:rgba(217,39,46,0.035); box-shadow:inset 3px 0 0 #D9272E}
+  .lib-thumb{width:108px; min-width:108px; height:64px; border-radius:8px; overflow:hidden; background:#EDEDEF; display:flex; align-items:center; justify-content:center; flex-shrink:0; border:1px solid var(--border-soft, var(--border)); position:relative}
+  .lib-thumb .badge-mega{position:absolute; left:6px; top:6px; width:20px; height:20px; display:inline-flex; align-items:center; justify-content:center; color:#D9272E; border:2px solid rgba(255,255,255,.92); border-radius:50%; background:#fff; box-shadow:0 2px 7px rgba(17,24,39,.16)}
+  .lib-thumb .badge-mega svg{width:16px;height:16px;display:block}
+  .lib-thumb img{width:100%;height:100%;object-fit:cover}
+  .lib-thumb .ic{width:16px;height:16px;color:var(--muted-2)}
+  .lib-main{flex:1; min-width:0; display:flex; flex-direction:column; gap:2px}
+  .lib-name{font-size:12.5px; font-weight:600; line-height:1.3; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:var(--fg)}
+  .lib-tags-row{display:flex; align-items:center; gap:6px; min-width:0}
+  .lib-tags{display:flex; gap:4px; flex:1; min-width:0; flex-wrap:wrap}
+  .tag{font-size:10px; font-weight:600; font-family:'JetBrains Mono', monospace; padding:2px 6px; border-radius:999px; border:1px solid var(--border); background:var(--card); color:var(--muted); max-width:110px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; transition:all .14s}
+  .tag:hover{border-color:var(--fg); color:var(--fg); background:var(--bg-muted)}
+  .tag.accent{color:var(--fg); border-color:var(--border-strong); background:var(--card)}
+  .lib-meta{font-size:10.5px; font-family:'JetBrains Mono', monospace; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:flex; gap:6px; flex-wrap:wrap; align-items:center}
+  .lib-meta .dot{width:2px;height:2px;border-radius:50%;background:var(--muted-2);display:inline-block}
+  .lib-meta b{color:var(--fg); font-weight:600}
+  .lib-sub{font-size:10px; font-family:'JetBrains Mono', monospace; color:var(--muted-2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .lib-acts{display:flex; gap:4px; flex:none; margin-left:auto}
+  .lib-btn{width:26px;height:26px; border-radius:7px; border:1px solid var(--border); background:var(--card); display:inline-flex; align-items:center; justify-content:center; color:var(--muted); cursor:pointer; transition:all .15s; font-size:12px}
+  .lib-btn svg{width:15px;height:15px;position:static;transform:none}
+  .lib-btn:hover{border-color:var(--accent); color:var(--fg)}
+  .lib-btn.dl:hover{background:var(--accent); color:#fff; border-color:var(--accent)}
+  .lib-empty{padding:28px 16px; text-align:center; color:var(--muted); font-size:13px; display:flex; flex-direction:column; align-items:center; gap:8px}
+  .lib-empty svg{width:28px;height:28px; color:var(--muted-2)}
+  /* Group manager dropdown */
+  .group-popover{position:absolute; z-index:70; top:40px; right:0; width:320px; padding:10px; border:1px solid var(--border); border-radius:14px; background:var(--card); box-shadow:0 18px 50px rgba(17,24,39,.16),0 3px 12px rgba(17,24,39,.07)}
+  .group-popover[hidden]{display:none}
+  .group-pop-head{display:flex; align-items:center; justify-content:space-between; gap:8px; padding:2px 2px 9px}
+  .group-pop-head strong{font-size:12px; font-weight:650}
+  .group-pop-head span{font:400 9.5px 'JetBrains Mono',monospace; color:var(--muted)}
+  .group-list{display:flex; flex-direction:column; gap:4px; max-height:248px; overflow:auto}
+  .group-row{min-height:40px; display:flex; align-items:center; gap:8px; padding:6px 7px; border:1px solid transparent; border-radius:9px}
+  .group-row:hover{background:var(--bg-subtle); border-color:var(--border)}
+  .group-row-icon{width:27px; height:27px; display:inline-flex; align-items:center; justify-content:center; flex:none; border-radius:8px; background:var(--bg-muted); color:var(--muted)}
+  .group-row-icon svg{width:14px; height:14px}
+  .group-name{min-width:0; flex:1; font-size:11.5px; font-weight:550; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .group-count{font:500 9.5px 'JetBrains Mono',monospace; color:var(--muted); background:var(--bg-muted); padding:2px 6px; border-radius:999px}
+  .group-action{width:25px; height:25px; display:inline-flex; align-items:center; justify-content:center; border:0; border-radius:7px; background:transparent; color:var(--muted); cursor:pointer}
+  .group-action:hover{background:var(--bg-muted); color:var(--fg)}
+  .group-action.danger:hover{color:#B4232A; background:rgba(217,39,46,.07)}
+  .group-action svg{width:13px; height:13px}
+  .group-edit-input{min-width:0; flex:1; height:29px; padding:0 8px; border:1px solid var(--focus); border-radius:7px; outline:0; font:500 11px 'Inter',sans-serif; box-shadow:0 0 0 3px rgba(91,99,232,.08)}
+  .group-add{display:flex; gap:6px; padding-top:9px; margin-top:8px; border-top:1px solid var(--border)}
+  .group-add input{min-width:0; flex:1; height:34px; padding:0 10px; border:1px solid var(--border); border-radius:8px; outline:0; font:400 11px 'Inter',sans-serif}
+  .group-add input:focus{border-color:var(--focus); box-shadow:0 0 0 3px rgba(91,99,232,.08)}
+  .group-add button{width:34px; height:34px; display:inline-flex; align-items:center; justify-content:center; border:1px solid var(--accent); border-radius:8px; background:var(--accent); color:#fff; cursor:pointer}
+  .group-add button svg{width:14px; height:14px}
+  .group-status{padding:8px; color:var(--muted); font-size:10.5px; text-align:center}
+  /* MEGA multi-account transfer */
+  .mega-open-btn{color:#D9272E; font-family:'JetBrains Mono',monospace; font-size:11px; font-weight:700}
+  .mega-open-btn:hover{color:#D9272E; border-color:rgba(217,39,46,0.45); background:rgba(217,39,46,0.04)}
+  .mega-selection{position:sticky; bottom:0; z-index:12; flex:none; display:flex; align-items:center; gap:8px; padding:10px 12px; border-top:1px solid rgba(217,39,46,0.22); background:rgba(255,248,248,0.97); backdrop-filter:blur(10px); box-shadow:0 -8px 24px rgba(17,24,39,.07); font-size:11px}
+  .mega-selection[hidden]{display:none}
+  .mega-selection span{flex:1; min-width:0; color:var(--fg); font-family:'JetBrains Mono',monospace}
+  .mega-selection button{height:28px; padding:0 9px; border:1px solid var(--border); border-radius:8px; background:var(--card); color:var(--muted); font:500 10.5px 'Inter',sans-serif; cursor:pointer}
+  .mega-selection button:hover{border-color:var(--border-strong); color:var(--fg)}
+  .mega-selection .mega-send{color:#fff; border-color:#D9272E; background:#D9272E; font-weight:600}
+  .mega-selection .mega-send:hover{color:#fff; border-color:#B91C24; background:#B91C24}
+  .mega-overlay{position:fixed; inset:0; z-index:100; display:flex; align-items:center; justify-content:center; padding:22px; background:rgba(10,12,18,0.58); backdrop-filter:blur(8px)}
+  .mega-overlay[hidden]{display:none}
+  .mega-dialog{width:min(980px,100%); max-height:min(820px,calc(100vh - 44px)); overflow:hidden; display:flex; flex-direction:column; border:1px solid var(--border); border-radius:18px; background:var(--card); box-shadow:0 28px 90px rgba(9,9,11,0.25)}
+  .mega-head{display:flex; align-items:center; gap:11px; padding:16px 18px; border-bottom:1px solid var(--border)}
+  .mega-mark{width:34px; height:34px; border-radius:10px; display:inline-flex; align-items:center; justify-content:center; flex:none; color:#fff; background:#D9272E; font:700 14px 'JetBrains Mono',monospace; box-shadow:0 5px 14px rgba(217,39,46,0.22)}
+  .mega-head-main{min-width:0; flex:1}
+  .mega-head h2{font-size:16px; font-weight:650; letter-spacing:-0.02em}
+  .mega-head p{color:var(--muted); font-size:11px; margin-top:1px}
+  .mega-close{width:32px; height:32px; border:1px solid var(--border); border-radius:9px; background:var(--card); color:var(--muted); cursor:pointer; font-size:17px}
+  .mega-close:hover{color:var(--fg); border-color:var(--border-strong); background:var(--bg-subtle)}
+  .mega-body{min-height:0; overflow-y:auto; display:grid; grid-template-columns:minmax(280px,.9fr) minmax(340px,1.1fr); gap:14px; padding:14px; background:var(--bg-subtle)}
+  .mega-panel{min-width:0; align-self:start; border:1px solid var(--border); border-radius:13px; background:var(--card); padding:13px}
+  .mega-panel-head{display:flex; align-items:center; gap:8px; margin-bottom:11px}
+  .mega-panel-head h3{flex:1; font-size:13px; font-weight:650; letter-spacing:-0.01em}
+  .mega-small-btn,.mega-primary,.mega-danger{border:1px solid var(--border); border-radius:8px; background:var(--card); color:var(--muted); padding:7px 9px; cursor:pointer; font:500 10.5px 'Inter',sans-serif}
+  .mega-small-btn:hover{color:var(--fg); border-color:var(--border-strong)}
+  .mega-primary{color:#fff; background:#D9272E; border-color:#D9272E; font-weight:600}
+  .mega-primary:hover{background:#B91C24; border-color:#B91C24}
+  .mega-primary:disabled{opacity:.48; cursor:not-allowed}
+  .mega-status{margin-bottom:11px; border-radius:8px; padding:8px 10px; background:rgba(91,99,232,.08); color:#454CC4; font-size:10.5px; line-height:1.5}
+  .mega-status.error{color:#B4232A; background:rgba(217,39,46,.07)}
+  .mega-status[hidden]{display:none}
+  .mega-account-list,.mega-job-list{display:flex; flex-direction:column; gap:8px}
+  .mega-account-list{max-height:260px; overflow-y:auto}
+  .mega-account{border:1px solid var(--border); border-radius:10px; background:var(--bg-subtle); padding:10px}
+  .mega-account-top{display:flex; align-items:center; gap:7px}
+  .mega-account-name{flex:1; min-width:0}
+  .mega-account-name strong,.mega-account-name span{display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .mega-account-name strong{color:var(--fg); font-size:11.5px; font-weight:600}
+  .mega-account-name span{color:var(--muted); font-size:9.5px; margin-top:2px}
+  .mega-toggle{font-size:9.5px; color:var(--muted); display:flex; gap:4px; align-items:center; cursor:pointer}
+  .mega-toggle input{accent-color:#D9272E}
+  .mega-account-del{width:24px; height:24px; border:0; border-radius:6px; background:transparent; color:var(--muted); cursor:pointer; font-size:15px}
+  .mega-account-del:hover{color:#B4232A; background:rgba(217,39,46,.07)}
+  .mega-quota{margin-top:8px}
+  .mega-quota-meta{display:flex; justify-content:space-between; gap:8px; color:var(--muted); font-size:9.5px; margin-bottom:5px}
+  .mega-quota-meta span:first-child{overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .mega-quota-track,.mega-job-track{height:5px; border-radius:999px; overflow:hidden; background:var(--bg-muted)}
+  .mega-quota-fill{height:100%; background:#D9272E; border-radius:inherit}
+  .mega-form{display:grid; gap:8px; margin-top:12px; padding-top:12px; border-top:1px solid var(--border)}
+  .mega-form-row{display:grid; grid-template-columns:1fr 1fr; gap:8px}
+  .mega-form input,.mega-form select{min-width:0; width:100%; height:36px; border:1px solid var(--border); border-radius:8px; background:var(--card); color:var(--fg); outline:none; padding:0 10px; font:400 11px 'Inter',sans-serif}
+  .mega-form input:focus,.mega-form select:focus{border-color:var(--focus); box-shadow:0 0 0 3px rgba(91,99,232,.09)}
+  .mega-form label{display:flex; align-items:center; gap:7px; color:var(--muted); font-size:10.5px}
+  .mega-form label input[type=checkbox]{width:auto; height:auto; accent-color:#D9272E}
+  .mega-selected-summary{color:var(--muted); font-size:10.5px; margin-bottom:9px; line-height:1.5}
+  .mega-divider{height:1px; background:var(--border); margin:14px 0}
+  .mega-job-list{max-height:305px; overflow-y:auto}
+  .mega-job{border:1px solid var(--border); border-radius:10px; background:var(--bg-subtle); padding:9px 10px}
+  .mega-job-top{display:flex; align-items:center; gap:7px}
+  .mega-job-name{min-width:0; flex:1; color:var(--fg); font-size:10.5px; font-weight:500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .mega-job-state{font:600 9px 'JetBrains Mono',monospace; text-transform:uppercase; letter-spacing:.04em; color:var(--muted)}
+  .mega-job-state.uploading{color:#4F56D8}.mega-job-state.done{color:#15803D}.mega-job-state.error{color:#B4232A}
+  .mega-job-fill{height:100%; background:#5B63E8; border-radius:inherit; transition:width .2s}
+  .mega-job.done .mega-job-fill{background:#22A35A}
+  .mega-job-meta,.mega-job-error{margin-top:5px; color:var(--muted); font:400 9.5px/1.45 'JetBrains Mono',monospace; overflow-wrap:anywhere}
+  .mega-job-error{color:#B4232A}
+  .mega-empty{color:var(--muted); text-align:center; font-size:10.5px; padding:18px 5px}
+  /* Overall */
+  .overall{
+    position:fixed; bottom:18px; right:18px; width:320px; max-width:calc(100vw - 24px);
+    background:var(--card); border:1px solid var(--border); border-radius:var(--radius-lg); box-shadow:var(--shadow-float);
+    padding:13px; z-index:40; display:none;
+  }
+  .overall.show{display:block; animation: in .25s ease}
+  .overall-head{display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px}
+  .overall-head strong{font-size:12px; font-weight:600}
+  .overall-sub{font-size:11px; font-family:'JetBrains Mono', monospace; color:var(--muted); margin-top:6px}
+  /* Toast */
+  .toasts{position:fixed; left:50%; bottom:22px; transform:translateX(-50%); display:flex; flex-direction:column; gap:8px; z-index:60; pointer-events:none}
+  .toast{background:var(--accent); color:#fff; font-size:12px; font-weight:500; padding:9px 14px; border-radius:999px; box-shadow:var(--shadow-float); animation: in .25s ease}
+  /* Responsive */
+  @media (max-width: 980px){
+    html,body{height:auto;overflow:auto}
+    .page{height:auto; min-height:100vh; grid-template-columns:1fr; gap:20px; padding:20px 14px 60px; overflow:visible}
+    .main{height:auto; overflow:visible}
+    .cards{flex:none; max-height:60vh}
+    .library{position:static; height:min(76vh,720px); min-height:460px}
+    .hero h1{font-size:26px}
+  }
+  @media (max-width: 760px){
+    .mega-overlay{padding:8px; align-items:stretch}
+    .mega-dialog{max-height:calc(100vh - 16px); margin:auto 0}
+    .mega-body{grid-template-columns:1fr}
+  }
+  @media (max-width: 640px){
+    .group-popover{position:absolute; top:40px; left:auto; right:0; width:min(320px,calc(100vw - 48px))}
+    .dropzone-head{align-items:flex-start;flex-wrap:wrap}
+    .header-options{width:100%;margin-left:0}
+    .header-options .group-select{flex:1;width:auto}
+    .card{flex-direction:column}
+    .thumb-wrap{width:100%; min-width:0; height:168px}
+    .ctl-row{flex-wrap:wrap}
+    .split-cta{width:100%;flex-basis:100%}
+  }
+</style>
 </head>
 <body>
-  <div class="page">
-    <div class="brand">
-      <h1>Re<em>Clip</em></h1>
-      <p>Free media downloader</p>
+
+<div class="page">
+  <main class="main">
+    <div class="hero">
+      <h1>Paste links, get files.</h1>
     </div>
 
-    <textarea id="urls" placeholder="Paste one or more URLs..." rows="2"></textarea>
-    <p class="hint">Multiple links? Separate with spaces, commas, or newlines.</p>
-
-    <div class="controls">
-      <div class="pill-group">
-        <button class="pill active" data-format="video" onclick="setFormat(this)">MP4</button>
-        <button class="pill" data-format="audio" onclick="setFormat(this)">MP3</button>
-      </div>
-      <button class="fetch-btn" id="goBtn" onclick="go()">Fetch</button>
-    </div>
-
-    <div id="cards" class="cards"></div>
-
-    <div class="footer">
-      YouTube &middot; TikTok &middot; Instagram &middot; Twitter/X &middot; Reddit &middot; Facebook<br>
-      Vimeo &middot; Twitch &middot; Dailymotion &middot; SoundCloud &middot; Loom &middot; Streamable<br>
-      Pinterest &middot; Tumblr &middot; Threads &middot; LinkedIn &middot; 1000+ more
-    </div>
-  </div>
-
-  <script>
-    let currentFormat = 'video';
-    let cardData = [];
-
-    function setFormat(btn) {
-      document.querySelectorAll('.pill').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      currentFormat = btn.dataset.format;
-    }
-
-    function parseUrls(text) {
-      return [...new Set(text.split(/[\s,]+/).map(u => u.trim()).filter(u => u.startsWith('http')))];
-    }
-
-    function fmtDur(s) {
-      if (!s) return '';
-      const m = Math.floor(s / 60);
-      const sec = Math.floor(s % 60);
-      return `${m}:${sec.toString().padStart(2, '0')}`;
-    }
-
-    function esc(s) {
-      const d = document.createElement('div');
-      d.textContent = s;
-      return d.innerHTML;
-    }
-
-    function friendlyError(err) {
-      if (err.includes('Unsupported URL')) return 'This URL is not supported';
-      if (err.includes('Video unavailable')) return 'Video is unavailable or private';
-      if (err.includes('Private video')) return 'This video is private';
-      if (err.includes('HTTP Error 403')) return 'Access denied by the platform';
-      if (err.includes('HTTP Error 404')) return 'Video not found';
-      if (err.includes('copyright')) return 'Video blocked due to copyright';
-      if (err.includes('geo')) return 'Video not available in your region';
-      if (err.includes('timed out') || err.includes('Timed out')) return 'Request timed out — try again';
-      if (err.includes('network') || err.includes('Network')) return 'Network error — check your connection';
-      return err.length > 80 ? err.slice(0, 80) + '...' : err;
-    }
-
-    document.getElementById('urls').addEventListener('keydown', e => {
-      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); go(); }
-    });
-
-    async function go() {
-      const urls = parseUrls(document.getElementById('urls').value);
-      if (!urls.length) return;
-
-      const btn = document.getElementById('goBtn');
-      const container = document.getElementById('cards');
-      btn.disabled = true;
-      btn.textContent = 'Loading...';
-      container.innerHTML = '';
-      cardData = [];
-
-      // Check if youtube playlist URL
-      for (let i = 0; i < urls.length; i++) {
-        if (urls[i].includes('list=')) {
-          const res = await fetch('/api/playlist', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url: urls[i] }),
-          });
-          const data = await res.json();
-          if (data.urls) {
-            // replace playlist URL with individual video URLs
-            urls.splice(i, 1, ...data.urls);
-          }
-        }
-      }
-
-      for (let i = 0; i < urls.length; i++) {
-        const url = urls[i];
-        const idx = cardData.length;
-        cardData.push({ url, status: 'loading' });
-        renderCard(idx);
-
-        try {
-          const res = await fetch('/api/info', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url }),
-          });
-          const data = await res.json();
-          if (data.error) {
-            cardData[idx] = { ...cardData[idx], status: 'info-error', error: data.error };
-          } else {
-            cardData[idx] = {
-              ...cardData[idx],
-              status: 'ready',
-              title: data.title || '',
-              thumbnail: data.thumbnail || '',
-              duration: data.duration,
-              uploader: data.uploader || '',
-              formats: data.formats || [],
-              selectedFormatId: data.formats?.[0]?.id || null,
-            };
-          }
-        } catch (err) {
-          cardData[idx] = { ...cardData[idx], status: 'info-error', error: err.message };
-        }
-        renderCard(idx);
-      }
-
-      if (cardData.filter(c => c.status === 'ready').length > 1) {
-        renderDownloadAll();
-      }
-
-      btn.disabled = false;
-      btn.textContent = 'Fetch';
-    }
-
-    function renderCard(idx) {
-      const c = cardData[idx];
-      let el = document.getElementById(`card-${idx}`);
-      if (!el) {
-        el = document.createElement('div');
-        el.id = `card-${idx}`;
-        el.className = 'card';
-        document.getElementById('cards').appendChild(el);
-      }
-
-      // Loading skeleton
-      if (c.status === 'loading') {
-        el.className = 'card';
-        el.innerHTML = `
-          <div class="card-thumb loading"></div>
-          <div class="card-body">
-            <div class="skeleton-line medium"></div>
-            <div class="skeleton-line short"></div>
-          </div>
-        `;
-        return;
-      }
-
-      // Error state
-      if (c.status === 'info-error') {
-        el.className = 'card card-error';
-        el.innerHTML = `
-          <div class="card-thumb">
-            <div class="card-error-icon">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+    <div class="panel dropzone-panel" id="dropPanel">
+      <div class="dropzone-head">
+        <div class="mode-segment" role="tablist">
+          <button class="mode-opt active" data-mode="video" onclick="setDropMode('video')">Download videos</button>
+          <button class="mode-opt" data-mode="scrape" onclick="setDropMode('scrape')">Scrape page</button>
+        </div>
+        <div class="header-options">
+          <div class="select-box header-select group-select" data-select="groupSel">
+            <select class="native-select" id="groupSel" aria-label="Save to group"><option value="">No group</option><option value="madbros">madbros</option><option value="archive">archive</option></select>
+            <button class="select-trigger" type="button" title="Save downloads to group" aria-haspopup="listbox" aria-expanded="false" onclick="toggleSelectBox(this)"><span class="select-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7h6l2 2h10v10H3z"/></svg></span><span class="select-label">No group</span><svg class="select-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m7 10 5 5 5-5"/></svg></button>
+            <div class="select-menu" id="groupSelMenu" role="listbox">
+              <button class="select-option" type="button" data-value="" aria-selected="true" onclick="chooseSelectOption(this)"><span class="select-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7h6l2 2h10v10H3z"/></svg></span><span>No group</span><span class="check">✓</span></button>
             </div>
           </div>
-          <div class="card-body">
-            <div class="card-title" style="color:var(--error)">Could not fetch video</div>
-            <div class="card-error-msg">${esc(friendlyError(c.error || ''))}</div>
-            <div class="card-error-url">${esc(c.url)}</div>
+          <div class="select-box header-select concurrent-select" data-select="concSel">
+            <select class="native-select" id="concSel" aria-label="Concurrent downloads"><option value="1">1</option><option value="2">2</option><option value="3" selected>3</option><option value="4">4</option><option value="6">6</option><option value="8">8</option></select>
+            <button class="select-trigger" type="button" title="Concurrent downloads" aria-haspopup="listbox" aria-expanded="false" onclick="toggleSelectBox(this)"><span class="select-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h13m-3-3 3 3-3 3M4 17h13m-3-3 3 3-3 3"/></svg></span><span class="select-label">3 at once</span><svg class="select-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m7 10 5 5 5-5"/></svg></button>
+            <div class="select-menu" role="listbox">
+              <button class="select-option" type="button" data-value="1" aria-selected="false" onclick="chooseSelectOption(this)"><span class="select-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 12h12m-3-3 3 3-3 3"/></svg></span><span>1 at once</span><span class="check">✓</span></button>
+              <button class="select-option" type="button" data-value="2" aria-selected="false" onclick="chooseSelectOption(this)"><span class="select-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 8h13m-3-3 3 3-3 3M4 16h13m-3-3 3 3-3 3"/></svg></span><span>2 at once</span><span class="check">✓</span></button>
+              <button class="select-option" type="button" data-value="3" aria-selected="true" onclick="chooseSelectOption(this)"><span class="select-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 6h13m-3-3 3 3-3 3M4 12h13m-3-3 3 3-3 3M4 18h13m-3-3 3 3-3 3"/></svg></span><span>3 at once</span><span class="check">✓</span></button>
+              <button class="select-option" type="button" data-value="4" aria-selected="false" onclick="chooseSelectOption(this)"><span class="select-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 5h13M4 10h13M4 15h13M4 20h13"/></svg></span><span>4 at once</span><span class="check">✓</span></button>
+              <button class="select-option" type="button" data-value="6" aria-selected="false" onclick="chooseSelectOption(this)"><span class="select-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 5h13M4 10h13M4 15h13M4 20h13"/></svg></span><span>6 at once</span><span class="check">✓</span></button>
+              <button class="select-option" type="button" data-value="8" aria-selected="false" onclick="chooseSelectOption(this)"><span class="select-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 5h13M4 10h13M4 15h13M4 20h13"/></svg></span><span>8 at once</span><span class="check">✓</span></button>
+            </div>
           </div>
-        `;
-        return;
-      }
-
-      // Ready / downloading / done / error states
-      el.className = 'card';
-      const isAudio = currentFormat === 'audio';
-
-      let thumbHtml;
-      if (isAudio) {
-        thumbHtml = `<div class="no-thumb" style="color:var(--accent)"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><polygon points="5 3 19 12 5 21 5 3"/></svg></div>`;
-      } else if (c.thumbnail) {
-        thumbHtml = `<img src="${c.thumbnail}" alt="">`;
-      } else {
-        thumbHtml = `<div class="no-thumb"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="20" rx="2"/><circle cx="8" cy="8" r="1.5"/><path d="m21 15-5-5L5 21"/></svg></div>`;
-      }
-
-      let qualityChips = '';
-      if (!isAudio && c.formats && c.formats.length > 1) {
-        qualityChips = c.formats.map(f =>
-          `<button class="q-chip${f.id === c.selectedFormatId ? ' active' : ''}" onclick="pickFormat(${idx}, '${f.id}')">${f.label}</button>`
-        ).join('');
-      }
-
-      let actionHtml = '';
-      if (c.status === 'ready') {
-        actionHtml = `<button class="card-dl-btn" onclick="dlCard(${idx})">Download</button>${qualityChips}`;
-      } else if (c.status === 'downloading') {
-        actionHtml = `<span class="card-status downloading"><span class="spin"></span> Downloading...</span>`;
-      } else if (c.status === 'done') {
-        actionHtml = `<button class="card-dl-btn done" onclick="saveCard(${idx})">Save</button>
-          <span class="card-status done">${esc(c.filename || '')}</span>`;
-      } else if (c.status === 'error') {
-        actionHtml = `<button class="card-dl-btn" onclick="dlCard(${idx})">Retry</button>
-          <span class="card-status error">${esc(friendlyError(c.error || 'Download failed'))}</span>`;
-      }
-
-      el.innerHTML = `
-        <div class="card-thumb">${thumbHtml}</div>
-        <div class="card-body">
-          <div class="card-title">${esc(c.title || 'Untitled')}</div>
-          <div class="card-meta">${esc(c.uploader)}${c.duration ? ' · ' + fmtDur(c.duration) : ''}</div>
-          <div class="card-actions">${actionHtml}</div>
         </div>
-      `;
+      </div>
+
+      <div class="drop-area" id="dropArea">
+        <div class="area-actions">
+          <button class="mini-btn" onclick="pasteFromClipboard()" title="Paste from clipboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="9" y="9" width="10" height="10" rx="2"/><path d="M15 9V7a2 2 0 0 0-2-2H7a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2"/></svg> Paste</button>
+          <button class="mini-btn" onclick="clearUrls()" title="Clear"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M18 6 6 18M6 6l12 12"/></svg> Clear</button>
+        </div>
+        <textarea id="urls" placeholder="Paste links here… e.g. https://bunkr.cr/a/84LADCnI"></textarea>
+        <div class="drop-footer">
+          <span></span>
+          <span class="link-badge" id="linkCount"><span class="b-dot"></span> <span id="linkText">0 links</span></span>
+        </div>
+      </div>
+
+      <div class="ctl-row">
+        <div class="seg" role="group" aria-label="Format">
+          <button class="active" data-format="video" onclick="setFormat(this)">MP4</button>
+          <button data-format="audio" onclick="setFormat(this)">MP3</button>
+        </div>
+        <div class="split-cta" id="splitFetch">
+          <button class="cta" id="goBtn" onclick="startFetch()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+            <span id="goLabel">Fetch</span>
+          </button>
+          <button class="fetch-menu-toggle" id="fetchMenuBtn" type="button" title="Choose fetch action" aria-haspopup="menu" aria-expanded="false" onclick="toggleFetchMenu(event)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m7 10 5 5 5-5"/></svg></button>
+          <div class="fetch-action-menu" id="fetchActionMenu" role="menu" hidden>
+            <button class="active" id="fetchOnlyOption" type="button" role="menuitem" onclick="setFetchAction(false)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 12h14M12 5l7 7-7 7"/></svg><span class="fetch-action-copy"><b>Fetch only</b><small>Review files before downloading</small></span></button>
+            <button id="fetchDownloadOption" type="button" role="menuitem" onclick="setFetchAction(true)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v11"/><path d="m8 10 4 4 4-4"/><path d="M5 19h14"/></svg><span class="fetch-action-copy"><b>Fetch & download</b><small>Start downloads automatically</small></span></button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="cards-head" id="cardsHead" style="display:none">
+      <h3>
+        <input type="checkbox" id="selectAll" onchange="toggleSelectAll(this)">
+        <span id="cardsTitle">0 videos</span>
+        <span class="bulk-info" id="bulkInfo" style="display:none">0 selected</span>
+      </h3>
+      <div class="actions">
+        <button class="ghost-btn" id="dlSelectedBtn" style="display:none" onclick="dlSelected()">Download selected</button>
+        <button class="ghost-btn" onclick="clearCards()">Clear</button>
+        <button class="ghost-btn primary" id="dlAllBtn" onclick="downloadAll()">Download all</button>
+      </div>
+    </div>
+    <div class="cards" id="cards">
+      <div class="empty-cards" id="emptyCards">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="20" height="14" rx="3"/><path d="M8 21h8"/><path d="M12 17v4"/><path d="M7 10l3 3 4-4 3 3"/></svg>
+        <h4>No videos yet</h4>
+        <p>Paste links above and hit Fetch. You can paste up to 100 URLs at once.</p>
+      </div>
+    </div>
+
+  </main>
+
+  <aside class="library" aria-label="Downloads">
+    <div class="lib-head">
+      <div class="lib-head-left">
+        <span class="lib-title">Downloads</span>
+        <span class="count" id="libCount">235</span>
+        <span class="lib-total" id="libTotal" title="Total size of filtered downloads">—</span>
+      </div>
+      <div class="lib-head-right">
+        <span id="libCountDetail" style="font-size:11px; font-family:'JetBrains Mono', monospace; color:var(--muted); white-space:nowrap"></span>
+        <div class="lib-actions">
+          <button class="icon-btn" id="groupMenuBtn" title="Manage groups" aria-haspopup="dialog" aria-expanded="false" onclick="toggleGroupsPopover(event)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m12 2 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5"/><path d="m3 17 9 5 9-5"/></svg></button>
+          <div class="group-popover" id="groupPopover" role="dialog" aria-label="Manage groups" hidden onclick="event.stopPropagation()">
+            <div class="group-pop-head"><strong>Groups</strong><span id="groupTotal">0 groups</span></div>
+            <div class="group-list" id="groupList"><div class="group-status">Loading groups…</div></div>
+            <div class="group-add">
+              <input id="groupNameInput" maxlength="80" placeholder="New group name…" autocomplete="off" onkeydown="if(event.key==='Enter'){event.preventDefault();addGroup()}">
+              <button type="button" onclick="addGroup()" title="Add group"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button>
+            </div>
+          </div>
+          <button class="icon-btn mega-open-btn" title="MEGA accounts and transfers" onclick="openMega()" aria-label="Open MEGA helper"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 0C5.372 0 0 5.372 0 12s5.372 12 12 12 12-5.372 12-12S18.628 0 12 0zm6.23 16.244a.371.371 0 0 1-.373.372H16.29a.371.371 0 0 1-.372-.372v-4.828c0-.04-.046-.06-.08-.033l-3.32 3.32a.742.742 0 0 1-1.043 0l-3.32-3.32c-.027-.027-.08-.007-.08.033v4.828a.371.371 0 0 1-.372.372H6.136a.371.371 0 0 1-.372-.372V7.757c0-.206.166-.372.372-.372h1.076a.75.75 0 0 1 .525.22l4.13 4.13a.18.18 0 0 0 .26 0l4.13-4.13c.14-.14.325-.22.525-.22h1.075c.206 0 .372.166.372.372z"/></svg></button>
+          <button class="icon-btn active" id="filterToggle" title="Hide filters" aria-expanded="true" onclick="toggleLibraryTools()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16l-6.5 7.2v5.3l-3 1.5v-6.8L4 5Z"/></svg></button>
+          <button class="icon-btn" title="Refresh downloads" onclick="refreshLibrary(true)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6v5h-5"/><path d="M19 11a7 7 0 1 0 1 4"/></svg></button>
+        </div>
+      </div>
+    </div>
+    <div class="lib-tools">
+      <div class="search-wrap">
+        <div class="sbox">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-4-4"></path></svg>
+          <input class="search" id="libSearch" placeholder="Search…" oninput="filterLib()">
+        </div>
+        <div class="view-toggle" role="group" aria-label="View">
+          <button class="active" id="viewList" onclick="setView('list')" title="List view"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6h11"/><path d="M9 12h11"/><path d="M9 18h11"/><circle cx="4.5" cy="6" r="1.4" fill="currentColor" stroke="none"/><circle cx="4.5" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="4.5" cy="18" r="1.4" fill="currentColor" stroke="none"/></svg></button>
+          <button id="viewGrid" onclick="setView('grid')" title="Grid view"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="8" height="8" rx="1.6"/><rect x="13" y="3" width="8" height="8" rx="1.6"/><rect x="3" y="13" width="8" height="8" rx="1.6"/><rect x="13" y="13" width="8" height="8" rx="1.6"/></svg></button>
+        </div>
+      </div>
+      <div class="filters">
+        <div class="select-box" data-select="fType">
+          <select class="native-select" id="fType"><option value="">All types</option><option value="video">Video</option><option value="audio">Audio</option></select>
+          <button class="select-trigger" type="button" aria-haspopup="listbox" aria-expanded="false" onclick="toggleSelectBox(this)"><span class="select-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 5h16v14H4z"/><path d="m10 9 5 3-5 3V9Z"/></svg></span><span class="select-label">All types</span><svg class="select-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m7 10 5 5 5-5"/></svg></button>
+          <div class="select-menu" role="listbox">
+            <button class="select-option" type="button" data-value="" aria-selected="true" onclick="chooseSelectOption(this)"><span class="select-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m10 9 5 3-5 3V9Z"/></svg></span><span>All types</span><span class="check">✓</span></button>
+            <button class="select-option" type="button" data-value="video" aria-selected="false" onclick="chooseSelectOption(this)"><span class="select-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="14" height="14" rx="2"/><path d="m17 10 4-2v8l-4-2"/><path d="m9 9 4 3-4 3V9Z"/></svg></span><span>Video</span><span class="check">✓</span></button>
+            <button class="select-option" type="button" data-value="audio" aria-selected="false" onclick="chooseSelectOption(this)"><span class="select-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 18V5l10-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="16" cy="16" r="3"/></svg></span><span>Audio</span><span class="check">✓</span></button>
+          </div>
+        </div>
+        <div class="select-box" data-select="fSort">
+          <select class="native-select" id="fSort"><option value="new">Newest</option><option value="old">Oldest</option><option value="az">A → Z</option><option value="big">Largest</option></select>
+          <button class="select-trigger" type="button" aria-haspopup="listbox" aria-expanded="false" onclick="toggleSelectBox(this)"><span class="select-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span><span class="select-label">Newest</span><svg class="select-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m7 10 5 5 5-5"/></svg></button>
+          <div class="select-menu" role="listbox">
+            <button class="select-option" type="button" data-value="new" aria-selected="true" onclick="chooseSelectOption(this)"><span class="select-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span><span>Newest</span><span class="check">✓</span></button>
+            <button class="select-option" type="button" data-value="old" aria-selected="false" onclick="chooseSelectOption(this)"><span class="select-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/></svg></span><span>Oldest</span><span class="check">✓</span></button>
+            <button class="select-option" type="button" data-value="az" aria-selected="false" onclick="chooseSelectOption(this)"><span class="select-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 5h7M4 12h5M4 19h3"/><path d="M16 5v14m-3-3 3 3 3-3"/></svg></span><span>A → Z</span><span class="check">✓</span></button>
+            <button class="select-option" type="button" data-value="big" aria-selected="false" onclick="chooseSelectOption(this)"><span class="select-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 20V10h4v10M10 20V4h4v16M15 20v-7h4v7"/></svg></span><span>Largest</span><span class="check">✓</span></button>
+          </div>
+        </div>
+        <div class="select-box" data-select="fGroup">
+          <select class="native-select" id="fGroup"><option value="all">All groups</option><option value="ungrouped">Ungrouped</option></select>
+          <button class="select-trigger" type="button" aria-haspopup="listbox" aria-expanded="false" onclick="toggleSelectBox(this)"><span class="select-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 13 9 5 9-5"/></svg></span><span class="select-label">All groups</span><svg class="select-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m7 10 5 5 5-5"/></svg></button>
+          <div class="select-menu" role="listbox" id="fGroupMenu"></div>
+        </div>
+        <div class="select-box" data-select="fDate">
+          <select class="native-select" id="fDate"><option value="">Any time</option><option value="today">Today</option><option value="7">Last 7 days</option><option value="30">Last 30 days</option></select>
+          <button class="select-trigger" type="button" aria-haspopup="listbox" aria-expanded="false" onclick="toggleSelectBox(this)"><span class="select-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M8 3v4M16 3v4M3 10h18"/></svg></span><span class="select-label">Any time</span><svg class="select-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m7 10 5 5 5-5"/></svg></button>
+          <div class="select-menu" role="listbox">
+            <button class="select-option" type="button" data-value="" aria-selected="true" onclick="chooseSelectOption(this)"><span class="select-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M8 3v4M16 3v4M3 10h18"/></svg></span><span>Any time</span><span class="check">✓</span></button>
+            <button class="select-option" type="button" data-value="today" aria-selected="false" onclick="chooseSelectOption(this)"><span class="select-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M8 3v4M16 3v4M3 10h18"/><path d="M8 14h4"/></svg></span><span>Today</span><span class="check">✓</span></button>
+            <button class="select-option" type="button" data-value="7" aria-selected="false" onclick="chooseSelectOption(this)"><span class="select-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l4 2"/></svg></span><span>Last 7 days</span><span class="check">✓</span></button>
+            <button class="select-option" type="button" data-value="30" aria-selected="false" onclick="chooseSelectOption(this)"><span class="select-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M8 3v4M16 3v4M3 10h18"/><path d="M7 14h10M7 17h7"/></svg></span><span>Last 30 days</span><span class="check">✓</span></button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="lib-list" id="libList"></div>
+    <div class="lib-summary" id="libSummary">
+      <span id="libSummaryLeft">—</span>
+      <span id="libSummaryRight" class="muted"></span>
+    </div>
+    <div class="mega-selection" id="megaSelection" hidden>
+      <span id="megaSelectionCount">0 files selected</span>
+      <button type="button" onclick="clearMegaSelection()">Clear</button>
+      <button type="button" class="mega-send" onclick="openMega()">Send to MEGA</button>
+    </div>
+  </aside>
+</div>
+
+<div class="mega-overlay" id="megaOverlay" hidden onclick="if(event.target===this)closeMega()">
+  <div class="mega-dialog" role="dialog" aria-modal="true" aria-labelledby="megaTitle" onclick="event.stopPropagation()">
+    <div class="mega-head">
+      <span class="mega-mark">M</span>
+      <div class="mega-head-main">
+        <h2 id="megaTitle">MEGA transfers</h2>
+        <p>Multiple accounts · live storage quotas · automatic allocation</p>
+      </div>
+      <button class="mega-close" type="button" onclick="closeMega()" aria-label="Close">×</button>
+    </div>
+    <div class="mega-body">
+      <section class="mega-panel">
+        <div class="mega-panel-head">
+          <h3>Accounts</h3>
+          <button class="mega-small-btn" type="button" onclick="loadMegaAccounts(true)">Refresh quotas</button>
+        </div>
+        <div class="mega-status" id="megaAccountStatus" hidden></div>
+        <div class="mega-account-list" id="megaAccountList"><div class="mega-empty">Loading accounts…</div></div>
+        <form class="mega-form" id="megaAccountForm" onsubmit="addMegaAccount(event)">
+          <div class="mega-form-row">
+            <input id="megaLabel" maxlength="60" placeholder="Account label" autocomplete="off" required>
+            <input id="megaEmail" type="email" maxlength="254" placeholder="MEGA email" autocomplete="username" required>
+          </div>
+          <input id="megaPassword" type="password" placeholder="MEGA password" autocomplete="current-password" required>
+          <button class="mega-primary" id="megaAddBtn" type="submit">Add account & verify quota</button>
+        </form>
+      </section>
+      <section class="mega-panel">
+        <div class="mega-panel-head"><h3>Upload selected files</h3></div>
+        <div class="mega-status" id="megaUploadStatus" hidden></div>
+        <div class="mega-selected-summary" id="megaSelectedSummary">No files selected.</div>
+        <form class="mega-form" onsubmit="startMegaUpload(event)" style="margin-top:0;padding-top:0;border-top:0">
+          <div class="mega-form-row">
+            <select id="megaDestinationAccount" aria-label="Destination account"><option value="auto">Automatic — most free space</option></select>
+            <input id="megaFolder" value="ReClip" maxlength="240" placeholder="Remote folder" autocomplete="off" required>
+          </div>
+          <label><input id="megaPreserveGroups" type="checkbox" checked> Preserve ReClip groups as MEGA folders</label>
+          <button class="mega-primary" id="megaUploadBtn" type="submit">Queue upload</button>
+        </form>
+        <div class="mega-divider"></div>
+        <div class="mega-panel-head">
+          <h3>Transfer queue</h3>
+          <button class="mega-small-btn" type="button" onclick="clearMegaFinished()">Clear finished</button>
+        </div>
+        <div class="mega-job-list" id="megaJobList"><div class="mega-empty">No MEGA uploads yet.</div></div>
+      </section>
+    </div>
+  </div>
+</div>
+
+<div class="overall" id="overall">
+  <div class="overall-head"><strong id="overallLabel">2/4 · 48%</strong><button class="icon-btn" style="width:24px;height:24px" onclick="hideOverall()">×</button></div>
+  <div class="track-bg"><div class="fill" id="overallFill" style="width:48%"></div></div>
+  <div class="overall-sub" id="overallSub">Downloading…</div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+
+<script>
+let currentFormat='video', currentMode='video', autoOn=false;
+const sampleThumbs = [
+  'https://picsum.photos/seed/rb1/320/180',
+  'https://picsum.photos/seed/rb2/320/180',
+  'https://picsum.photos/seed/rb3/320/180',
+];
+const demoLibData = [
+  {name:'madbrosX_Valentina — Hotel balcony', site:'bunkr.cr', group:'madbros', size:'1.42 GB', res:'1920×1080', dur:'04:12', ext:'mp4', date:'21 Aug', thumb:sampleThumbs[0], type:'video'},
+  {name:'madbrosX_Valentina — Rooftop (2)', site:'bunkr.cr', group:'madbros', size:'1.38 GB', res:'2560×1440', dur:'03:55', ext:'mp4', date:'21 Aug', thumb:'', type:'video'},
+  {name:'jjadore (2) — Hotel suite panorama', site:'bunkr.cr', group:'madbros', size:'1.24 GB', res:'1920×1080', dur:'45:29', ext:'mp4', date:'20 Aug', thumb:'https://picsum.photos/seed/jj1/320/180', type:'video'},
+  {name:'jjadore (1) — Corridor walk', site:'bunkr.cr', group:'madbros', size:'782 MB', res:'1280×720', dur:'39:12', ext:'mp4', date:'20 Aug', thumb:'https://picsum.photos/seed/jj2/320/180', type:'video'},
+  {name:'Marta Villalobos — Soccer handbrake', site:'bunkr.cr', group:'madbros', size:'1.52 GB', res:'3840×2160', dur:'12:04', ext:'mkv', date:'21 Aug', thumb:'', type:'video'},
+  {name:'Marta Villalobos — Stadium terms', site:'bunkr.cr', group:'madbros', size:'1.61 GB', res:'1920×1080', dur:'55:30', ext:'mp4', date:'19 Aug', thumb:'https://picsum.photos/seed/mv1/320/180', type:'video'},
+  {name:'Marta Villalobos — Press kit (split 001)', site:'bunkr.cr', group:'madbros', size:'1.02 GB', res:'—', dur:'—', ext:'7z.001', date:'21 Aug', thumb:'', type:'video'},
+  {name:'Marta Villalobos — Press kit (split 002)', site:'bunkr.cr', group:'madbros', size:'987 MB', res:'—', dur:'—', ext:'7z.002', date:'21 Aug', thumb:'', type:'video'},
+  {name:'FairyFreak — Night session 04', site:'youtube.com', group:'', size:'892 MB', res:'1920×1080', dur:'22:18', ext:'mp4', date:'Today', thumb:'https://picsum.photos/seed/ff1/320/180', type:'video'},
+  {name:'Loom — Product demo Q3', site:'loom.com', group:'archive', size:'124 MB', res:'1920×1080', dur:'08:42', ext:'mp4', date:'Today', thumb:'', type:'video'},
+  {name:'Fettanizm — Archive 12', site:'bunkr.cr', group:'archive', size:'2.14 GB', res:'1920×1080', dur:'31:05', ext:'mp4', date:'18 Aug', thumb:'https://picsum.photos/seed/fe1/320/180', type:'video'},
+  {name:'Tutorial — Audio rip', site:'soundcloud.com', group:'archive', size:'48 MB', res:'—', dur:'04:02', ext:'mp3', date:'16 Aug', thumb:'', type:'audio'},
+];
+// Keep sample rows only for direct-file design previews; the served app starts from the API.
+let libData = (location.protocol==='file:'?demoLibData:[]).map((f,index)=>({
+  ...f,
+  filename:f.name,
+  group_id:f.group,
+  sizeBytes:parseSize(f.size),
+  createdAt:Date.now()/1000-index*86400,
+  isDemo:true,
+}));
+let filteredData = [...libData];
+function parseSize(s){
+  const m = String(s).trim().match(/([\d.]+)\s*(GB|MB|KB|B)/i);
+  if(!m) return 0;
+  const n=parseFloat(m[1]); const u=m[2].toUpperCase();
+  const mult={B:1, KB:1024, MB:1024*1024, GB:1024*1024*1024, TB:1024*1024*1024*1024}[u]||0;
+  return n*mult;
+}
+function fmtBytes(b){
+  if(!b) return '0 B';
+  const u=['B','KB','MB','GB','TB']; let i=0; let n=b;
+  while(n>=1024 && i<u.length-1){ n/=1024; i++; }
+  return i===0 ? `${Math.round(n)} ${u[i]}` : `${n.toFixed(n>=100?0:n>=10?1:2)} ${u[i]}`;
+}
+function totalBytes(list){ return list.reduce((a,f)=>a+(Number(f.sizeBytes)||parseSize(f.size)),0); }
+function totalDuration(list){
+  let s=0; list.forEach(f=>{
+    const m=String(f.dur).match(/(?:(\d+):)?(\d+):(\d+)/);
+    if(m){ const h=m[1]?parseInt(m[1],10):0; s+= h*3600 + parseInt(m[2],10)*60 + parseInt(m[3],10); }
+    else { const m2=String(f.dur).match(/(\d+):(\d+)/); if(m2) s+= parseInt(m2[1],10)*60+parseInt(m2[2],10); }
+  });
+  if(!s) return '—';
+  const h=Math.floor(s/3600), mm=Math.floor((s%3600)/60), ss=s%60;
+  return h? `${h}:${String(mm).padStart(2,'0')}:${String(ss).padStart(2,'0')}` : `${mm}:${String(ss).padStart(2,'0')}`;
+}
+
+function esc(s){const d=document.createElement('div'); d.textContent=String(s??''); return d.innerHTML}
+function escAttr(s){return esc(s).replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
+function toast(msg){
+  const t=document.createElement('div'); t.className='toast'; t.textContent=msg;
+  document.getElementById('toasts').appendChild(t);
+  setTimeout(()=>{t.style.opacity='0'; t.style.transform='translateY(4px)'; setTimeout(()=>t.remove(),300)},2200);
+}
+function setMode(btn, mode){
+  document.querySelectorAll('.nav-pill').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  currentMode=mode; updateGoLabel();
+}
+function setDropMode(m){
+  currentMode=m==='scrape'?'scrape':'video';
+  document.querySelectorAll('.mode-opt').forEach(b=>b.classList.toggle('active',b.dataset.mode===currentMode));
+  try{localStorage.setItem('reclip_mode',currentMode);}catch{}
+  updateGoLabel();
+}
+function setFormat(btn){
+  document.querySelectorAll('.seg button').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  currentFormat=btn.dataset.format==='audio'?'audio':'video';
+  try{localStorage.setItem('reclip_format',currentFormat);}catch{}
+  if(cards.length) renderCards();
+}
+function closeFetchMenu(){
+  const wrap=document.getElementById('splitFetch');
+  const menu=document.getElementById('fetchActionMenu');
+  const button=document.getElementById('fetchMenuBtn');
+  if(wrap) wrap.classList.remove('open');
+  if(menu) menu.hidden=true;
+  if(button) button.setAttribute('aria-expanded','false');
+}
+function toggleFetchMenu(event){
+  event?.stopPropagation();
+  const wrap=document.getElementById('splitFetch');
+  const menu=document.getElementById('fetchActionMenu');
+  const button=document.getElementById('fetchMenuBtn');
+  const open=menu.hidden;
+  closeSelectBoxes(); closeGroupsPopover();
+  menu.hidden=!open; wrap.classList.toggle('open',open); button.setAttribute('aria-expanded',String(open));
+}
+function setFetchAction(download,persist=true){
+  autoOn=!!download;
+  document.getElementById('fetchOnlyOption')?.classList.toggle('active',!autoOn);
+  document.getElementById('fetchDownloadOption')?.classList.toggle('active',autoOn);
+  if(persist){try{localStorage.setItem('reclip_fetch_action',autoOn?'download':'fetch');}catch{}}
+  updateGoLabel(); closeFetchMenu();
+}
+function updateGoLabel(){
+  const el=document.getElementById('goLabel'); if(!el) return;
+  const isScrape=currentMode==='scrape';
+  el.textContent=autoOn?(isScrape?'Scrape & download':'Fetch & download'):(isScrape?'Scrape':'Fetch');
+}
+async function pasteFromClipboard(){
+  try{ const txt=await navigator.clipboard.readText(); if(txt){ ta.value = txt.trim(); updateCount(); updateGoLabel(); ta.focus(); } } catch{ toast('Clipboard blocked — paste with ⌘V') }
+}
+function clearUrls(){ ta.value=''; updateCount(); updateGoLabel(); ta.focus(); }
+const ta=document.getElementById('urls');
+const badge=document.getElementById('linkCount');
+const badgeText=document.getElementById('linkText');
+function tokens(text){ return text.split(/[\s,]+/).map(s=>s.trim()).filter(s=>s.startsWith('http')) }
+function updateCount(){
+  try{localStorage.setItem('reclip_urls',ta.value);}catch{}
+  const toks=tokens(ta.value);
+  const uniq=[...new Set(toks)];
+  const dupes=toks.length-uniq.length;
+  if(!uniq.length){ badge.classList.remove('show'); return}
+  badge.classList.add('show');
+  badgeText.textContent = `${uniq.length} link${uniq.length>1?'s':''}` + (dupes? ` · ${dupes} dup` : '');
+}
+ta.addEventListener('input', ()=>{updateCount(); updateGoLabel()});
+const dropArea=document.getElementById('dropArea');
+;['dragenter','dragover'].forEach(ev=> dropArea.addEventListener(ev, e=>{e.preventDefault(); dropArea.classList.add('drag')}));
+;['dragleave','drop'].forEach(ev=> dropArea.addEventListener(ev, e=>{e.preventDefault(); dropArea.classList.remove('drag')}));
+dropArea.addEventListener('drop', e=>{
+  const text=e.dataTransfer.getData('text/plain');
+  if(text){ e.preventDefault(); ta.value = (ta.value?ta.value+'\n':'')+text.trim(); updateCount(); }
+  const file=e.dataTransfer.files[0];
+  if(file && file.type==='text/plain'){ e.preventDefault(); file.text().then(t=>{ta.value=(ta.value?ta.value+'\n':'')+t; updateCount()}) }
+});
+
+let cards=[];
+const ACTIVE_DOWNLOAD_STATES=['queued','downloading','processing','resolving'];
+function friendlyError(error){
+  const value=String(error||'Unknown error');
+  if(value.includes('Unsupported URL')) return 'This URL is not supported';
+  if(value.includes('Video unavailable')) return 'This video is unavailable or private';
+  if(value.includes('HTTP Error 403')) return 'Access denied by the platform';
+  if(value.toLowerCase().includes('rate limit')||value.includes('429')) return 'Rate-limited by the host — wait a moment and retry';
+  if(value.toLowerCase().includes('timed out')) return 'Request timed out — try again';
+  return value.length>120?value.slice(0,120)+'…':value;
+}
+function cardDuration(seconds){
+  seconds=Math.round(Number(seconds)||0); if(!seconds) return '';
+  const h=Math.floor(seconds/3600),m=Math.floor((seconds%3600)/60),s=seconds%60;
+  return h?`${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`:`${m}:${String(s).padStart(2,'0')}`;
+}
+function cardHost(url){try{return new URL(url).hostname.replace(/^www\./,'');}catch{return '';}}
+function readyIndexes(){return cards.map((card,index)=>card?.status==='ready'?index:-1).filter(index=>index>=0);}
+function renderCards(){
+  const wrap=document.getElementById('cards');
+  const head=document.getElementById('cardsHead');
+  const empty=document.getElementById('emptyCards');
+  const alive=cards.filter(card=>card&&card.status!=='deleted');
+  wrap.querySelectorAll('.card').forEach(card=>card.remove());
+  if(!alive.length){
+    head.style.display='none';
+    if(empty) empty.style.display='flex';
+    return;
+  }
+  if(empty) empty.style.display='none';
+  head.style.display='flex';
+  document.getElementById('cardsTitle').textContent=`${alive.length} item${alive.length===1?'':'s'}`;
+  const ready=readyIndexes();
+  const selected=ready.filter(index=>cards[index].selected).length;
+  const bulkInfo=document.getElementById('bulkInfo');
+  const dlSelBtn=document.getElementById('dlSelectedBtn');
+  bulkInfo.style.display=selected?'':'none';
+  bulkInfo.textContent=selected?`${selected} selected`:'';
+  dlSelBtn.style.display=selected?'':'none';
+  const selectAll=document.getElementById('selectAll');
+  selectAll.checked=ready.length>0&&selected===ready.length;
+  selectAll.indeterminate=selected>0&&selected<ready.length;
+  document.getElementById('dlAllBtn').style.display=ready.length>1?'':'none';
+
+  cards.forEach((card,index)=>{
+    if(!card||card.status==='deleted') return;
+    const element=document.createElement('div');
+    element.id=`card-${index}`;
+    if(card.status==='loading'){
+      element.className='card';
+      element.innerHTML=`<div class="thumb-wrap" style="background:linear-gradient(90deg,#F4F4F5 25%,#ECECEE 50%,#F4F4F5 75%);background-size:200% 100%;animation:sh 1.2s infinite"></div><div class="card-body"><div style="height:12px;width:70%;border-radius:6px;background:#F4F4F5"></div><div style="height:10px;width:40%;border-radius:6px;background:#F4F4F5;margin-top:6px"></div></div>`;
+      wrap.appendChild(element); return;
+    }
+    if(card.status==='info-error'){
+      element.className='card error';
+      element.innerHTML=`<div class="thumb-wrap"><div class="ph"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="10"/><path d="M12 8v5M12 16h.01"/></svg></div></div><div class="card-body"><div class="card-title" style="color:#DC2626">Could not fetch</div><div class="error-text">${esc(friendlyError(card.error))}</div><div class="card-meta">${esc(card.url)}</div><div class="card-foot"><button class="btn-sm btn-ghost" onclick="retry(${index})">Retry</button><button class="btn-sm btn-ghost" onclick="removeCard(${index})">Remove</button></div></div>`;
+      wrap.appendChild(element); return;
     }
 
-    function renderDownloadAll() {
-      const existing = document.getElementById('dl-all-bar');
-      if (existing) existing.remove();
-
-      const bar = document.createElement('div');
-      bar.id = 'dl-all-bar';
-      bar.className = 'dl-all-bar';
-      bar.innerHTML = `<button class="dl-all-btn" onclick="dlAll()">Download All</button>`;
-      document.getElementById('cards').appendChild(bar);
+    element.className='card'+(card.selected?' selected':'')+(ACTIVE_DOWNLOAD_STATES.includes(card.status)?' downloading':'');
+    const isAudio=currentFormat==='audio';
+    const thumbnail=card.thumbnail||card.thumb||'';
+    const duration=cardDuration(card.duration);
+    const thumb=isAudio
+      ?`<div class="ph" style="background:var(--accent);color:#fff"><svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6Z"/></svg></div>`
+      :thumbnail?`<img src="${escAttr(thumbnail)}" alt="" loading="lazy">${duration?`<span class="dur-badge">${esc(duration)}</span>`:''}`
+      :`<div class="ph"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="1.5"/><path d="m21 15-5-5L5 20"/></svg></div>`;
+    let footer='';
+    if(card.status==='ready'){
+      const formats=(!isAudio&&card.formats?.length>1)?card.formats.slice(0,6):[];
+      const qualities=formats.length?`<span class="q-group">${formats.map(format=>`<button class="q${String(format.id)===String(card.selectedFormatId)?' active':''}" onclick="pickCardFormat(${index},'${encodeURIComponent(format.id)}')">${esc(format.label)}</button>`).join('')}</span>`:'';
+      const existing=card.alreadyOnServer?'<span style="font-size:11px;color:#16A34A;font-weight:600">✓ On server</span>':'';
+      footer=`${existing}<button class="btn-sm btn-primary" onclick="downloadOne(${index})">${card.alreadyOnServer?'Reuse':'Download'}</button>${qualities}<button class="btn-sm btn-ghost" onclick="copyLink(${index})">Copy link</button><button class="btn-sm btn-ghost" onclick="removeCard(${index})">Remove</button>`;
+    }else if(ACTIVE_DOWNLOAD_STATES.includes(card.status)){
+      const pct=Math.max(0,Math.min(100,Math.round(Number(card.progress)||0)));
+      const processing=['processing','resolving'].includes(card.status);
+      const cls=card.status==='queued'?'fill queued':processing?'fill processing':'fill';
+      const left=card.status==='queued'?'Queued':card.status==='resolving'?'Resolving':card.status==='processing'?'Processing':`${pct}%${card.size?' · '+card.size:''}`;
+      const right=[card.speed,card.eta?`ETA ${card.eta}`:''].filter(Boolean).join(' · ');
+      footer=`<div class="progress" style="flex-basis:100%"><div class="track-bg"><div class="${cls}" style="width:${processing?100:card.status==='queued'?6:pct}%"></div></div><div class="progress-meta"><span><b>${esc(left)}</b></span><span>${esc(right)}</span></div></div><button class="btn-sm btn-ghost" onclick="stopOne(${index})">Stop</button>`;
+    }else if(card.status==='done'){
+      const href=card.jobId?`/api/file/${encodeURIComponent(card.jobId)}`:card.filename?`/api/library/download?f=${encodeURIComponent(card.filename)}`:'';
+      footer=`${href?`<a class="btn-sm btn-primary" href="${href}" download>Save</a>`:''}<span style="font-size:12px;color:#16A34A;font-weight:600">✓ ${card.deduped?'Already saved':'Saved'}</span><button class="btn-sm btn-ghost" onclick="copyLink(${index})">Copy link</button><button class="btn-sm btn-ghost" onclick="removeCard(${index})">Delete</button>`;
+    }else if(card.status==='cancelled'){
+      footer=`<button class="btn-sm btn-primary" onclick="retry(${index})">Retry</button><span style="font-size:12px;color:var(--muted);font-weight:600">Stopped</span><button class="btn-sm btn-ghost" onclick="removeCard(${index})">Delete</button>`;
+    }else if(card.status==='error'){
+      footer=`<button class="btn-sm btn-primary" onclick="retry(${index})">Retry</button><button class="btn-sm btn-ghost" onclick="removeCard(${index})">Delete</button><div class="error-text" style="flex-basis:100%">${esc(friendlyError(card.error||'Download failed'))}</div>`;
     }
+    const meta=[card.uploader||cardHost(card.url),duration].filter(Boolean).join(' · ');
+    const checkbox=card.status==='ready'?`<input type="checkbox" class="card-check" ${card.selected?'checked':''} onchange="toggleSelect(${index},this.checked)">`:'';
+    element.innerHTML=`${checkbox}<div class="thumb-wrap">${thumb}</div><div class="card-body${checkbox?' has-check':''}"><div class="card-title" title="${escAttr(card.title||'Untitled')}">${esc(card.title||'Untitled')}</div><div class="card-meta">${esc(meta)}</div><div class="card-foot">${footer}</div></div>`;
+    wrap.appendChild(element);
+  });
+}
+function toggleSelect(index,value){if(cards[index]?.status==='ready'){cards[index].selected=!!value;renderCards();}}
+function toggleSelectAll(checkbox){readyIndexes().forEach(index=>{cards[index].selected=checkbox.checked;});renderCards();}
+function dlSelected(){
+  const selected=readyIndexes().filter(index=>cards[index].selected);
+  if(!selected.length){toast('No selected ready items');return;}
+  downloadIndexes(selected);
+}
+function pickCardFormat(index,encodedId){if(cards[index]){cards[index].selectedFormatId=decodeURIComponent(encodedId);renderCards();}}
+function copyLink(index){const url=cards[index]?.url||'';if(!url)return;navigator.clipboard.writeText(url).then(()=>toast('Link copied')).catch(()=>toast(url));}
+const fetchIntervals={};
+const fetchBases={};
+const settledFetches=new Set();
+const batchPollTimers=new Map();
+let libraryRefreshTimer=null;
+async function apiJson(path,options={}){
+  const response=await fetch(path,options);
+  let data={}; try{data=await response.json();}catch{}
+  if(!response.ok) throw new Error(data.error||`Request failed (${response.status})`);
+  return data;
+}
+async function startFetch(overrideUrls=null){
+  const urls=overrideUrls||[...new Set(tokens(ta.value))];
+  if(!urls.length){ta.focus();toast('Paste a link first');return;}
+  const button=document.getElementById('goBtn');
+  const menuButton=document.getElementById('fetchMenuBtn');
+  button.disabled=true;menuButton.disabled=true;closeFetchMenu();
+  const old=button.innerHTML;
+  button.innerHTML='<span style="width:14px;height:14px;border:2px solid #fff;border-right-color:transparent;border-radius:50%;display:inline-block;animation:spin .6s linear infinite"></span> Loading…';
+  try{
+    const data=await apiJson('/api/fetch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({urls,mode:currentMode})});
+    await attachFetchBatch(data.batch_id);
+  }catch(error){
+    cards.push({url:urls[0]||'',status:'info-error',error:error.message||'Could not start fetch',selected:false});
+    renderCards();
+  }finally{
+    button.disabled=false;menuButton.disabled=false;button.innerHTML=old;updateGoLabel();
+  }
+}
+function clearFetchPoll(batchId){
+  if(fetchIntervals[batchId]) clearInterval(fetchIntervals[batchId]);
+  delete fetchIntervals[batchId];delete fetchBases[batchId];settledFetches.add(batchId);
+}
+async function attachFetchBatch(batchId){
+  if(!batchId||batchId in fetchIntervals||batchId in fetchBases||settledFetches.has(batchId)) return;
+  fetchIntervals[batchId]=null;
+  let snapshot;
+  try{snapshot=await apiJson('/api/fetch/'+encodeURIComponent(batchId));}
+  catch{delete fetchIntervals[batchId];return;}
+  fetchBases[batchId]=cards.length;
+  (snapshot.urls||[]).forEach(item=>cards.push({url:item.url||'',status:'loading',selected:false,batchId}));
+  buildFetchCards(snapshot);
+  if(snapshot.finished){clearFetchPoll(batchId);afterFetchBatch(batchId);return;}
+  fetchIntervals[batchId]=setInterval(async()=>{
+    try{
+      const state=await apiJson('/api/fetch/'+encodeURIComponent(batchId));
+      buildFetchCards(state);
+      if(state.finished){clearFetchPoll(batchId);afterFetchBatch(batchId);}
+    }catch{clearFetchPoll(batchId);}
+  },700);
+}
+function buildFetchCards(state){
+  if(!(state.batch_id in fetchIntervals)) return;
+  const base=fetchBases[state.batch_id]??cards.length;
+  if(fetchBases[state.batch_id]==null) fetchBases[state.batch_id]=base;
+  let cursor=base;
+  (state.urls||[]).forEach(item=>{
+    let index=cursor;
+    while(index<cards.length&&cards[index]&&cards[index].batchId!==state.batch_id) index++;
+    if(index>=cards.length) cards.push({url:item.url||'',status:'loading',selected:false,batchId:state.batch_id});
+    cursor=index+1;
+    const card=cards[index]||(cards[index]={url:item.url||'',status:'loading',selected:false,batchId:state.batch_id});
+    card.batchId=state.batch_id;
+    if(card.status!=='loading') return;
+    if(item.status==='done') Object.assign(card,{url:item.url||card.url,status:'ready',title:item.title||'',thumbnail:item.thumbnail||'',duration:item.duration,uploader:item.uploader||'',formats:item.formats||[],selectedFormatId:item.formats?.[0]?.id||null,videoId:item.id||null,extractor:item.extractor||'',alreadyOnServer:!!item.already_on_server,existingFile:item.existing_file||'',selected:false});
+    else if(item.status==='error') Object.assign(card,{status:'info-error',error:item.error||'Could not fetch item'});
+  });
+  renderCards();
+}
+function afterFetchBatch(batchId){
+  const batchReady=readyIndexes().filter(index=>cards[index].batchId===batchId);
+  if(autoOn&&batchReady.length) downloadIndexes(batchReady);
+}
+function selectedGroupId(){return document.getElementById('groupSel')?.value||'';}
+function downloadPayload(card){
+  return {url:card.url,format:currentFormat,format_id:card.selectedFormatId,title:card.title||'',thumbnail:card.thumbnail||'',group_id:selectedGroupId(),id:card.videoId,extractor:card.extractor};
+}
+async function downloadOne(index){
+  const card=cards[index];if(!card||card.status!=='ready'&&card.status!=='error'&&card.status!=='cancelled')return;
+  card.status='queued';card.error='';card.progress=0;card.speed='';card.eta='';card.cancelRequested=false;renderCards();
+  try{
+    const data=await apiJson('/api/download',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(downloadPayload(card))});
+    card.jobId=data.job_id;
+    if(data.status==='done'){applyJobUpdate(index,data);return;}
+    if(card.cancelRequested){await fetch('/api/cancel/'+encodeURIComponent(card.jobId),{method:'POST'});return;}
+    pollCard(index);
+  }catch(error){card.status='error';card.error=error.message;renderCards();}
+}
+function applyJobUpdate(index,data){
+  const card=cards[index];if(!card||card.status==='deleted')return true;
+  const locked=card.status==='cancelled'||card.cancelRequested;
+  if(!locked){
+    if(typeof data.progress==='number')card.progress=data.progress;
+    card.speed=data.speed||'';card.eta=data.eta||'';card.size=data.size||'';card.downloaded=data.downloaded||'';
+  }
+  if(data.status==='done'){
+    card.status='done';card.progress=100;card.filename=data.filename||card.filename;card.deduped=!!data.deduped;card.selected=false;
+    scheduleLibraryRefresh();renderCards();return true;
+  }
+  if(data.status==='error'){card.status='error';card.error=data.error||'Download failed';renderCards();return true;}
+  if(data.status==='cancelled'){card.status='cancelled';card.speed='';card.eta='';renderCards();return true;}
+  if(locked)return false;
+  card.status=data.status||card.status;renderCards();return false;
+}
+function pollCard(index){
+  const card=cards[index];if(!card?.jobId||card.pollTimer)return;
+  card.pollTimer=setInterval(async()=>{
+    try{
+      const data=await apiJson('/api/status/'+encodeURIComponent(card.jobId));
+      if(applyJobUpdate(index,data)){clearInterval(card.pollTimer);card.pollTimer=null;}
+    }catch(error){clearInterval(card.pollTimer);card.pollTimer=null;card.status='error';card.error=error.message||'Lost connection to server';renderCards();}
+  },800);
+}
+async function stopOne(index){
+  const card=cards[index];if(!card)return;
+  if(card.pollTimer){clearInterval(card.pollTimer);card.pollTimer=null;}
+  card.cancelRequested=true;card.status='cancelled';card.speed='';card.eta='';renderCards();
+  if(card.jobId){try{await apiJson('/api/cancel/'+encodeURIComponent(card.jobId),{method:'POST'});}catch{}}
+}
+async function removeCard(index){
+  const card=cards[index];if(!card)return;
+  if(card.pollTimer){clearInterval(card.pollTimer);card.pollTimer=null;}
+  cards[index]={status:'deleted',url:card.url,batchId:card.batchId};renderCards();
+  if(card.jobId){try{await apiJson('/api/delete/'+encodeURIComponent(card.jobId),{method:'POST'});scheduleLibraryRefresh();}catch(error){toast(error.message);}}
+}
+function retry(index){
+  const card=cards[index];if(!card)return;
+  if(card.status==='info-error'){const url=card.url;cards[index]={status:'deleted',url,batchId:card.batchId};renderCards();startFetch([url]);return;}
+  card.status='ready';card.progress=0;card.speed='';card.eta='';card.cancelRequested=false;renderCards();downloadOne(index);
+}
+function clearCards(){
+  cards.forEach(card=>{if(card?.pollTimer)clearInterval(card.pollTimer);if(card?.jobId&&ACTIVE_DOWNLOAD_STATES.includes(card.status))fetch('/api/cancel/'+encodeURIComponent(card.jobId),{method:'POST'}).catch(()=>{});});
+  Object.keys(fetchIntervals).forEach(clearFetchPoll);cards=[];renderCards();hideOverall();
+}
+async function downloadIndexes(indexes){
+  const ready=[...new Set(indexes)].filter(index=>cards[index]?.status==='ready');
+  if(!ready.length){toast('Nothing to download');return;}
+  if(ready.length===1){downloadOne(ready[0]);return;}
+  document.getElementById('overall').classList.add('show');
+  ready.forEach(index=>{Object.assign(cards[index],{status:'queued',progress:0,speed:'',eta:'',selected:false,cancelRequested:false});});
+  renderCards();updateOverall({completed:0,total:ready.length,overall_progress:0,errored:0,cancelled:0,finished:false});
+  try{
+    const data=await apiJson('/api/batch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({items:ready.map(index=>downloadPayload(cards[index]))})});
+    (data.jobs||[]).forEach((job,position)=>{const index=ready[position];if(index==null)return;cards[index].jobId=job.job_id;if(cards[index].cancelRequested)fetch('/api/cancel/'+encodeURIComponent(job.job_id),{method:'POST'}).catch(()=>{});});
+    pollBatch(data.batch_id);
+  }catch(error){ready.forEach(index=>{cards[index].status='error';cards[index].error=error.message;});renderCards();hideOverall();}
+}
+function downloadAll(){downloadIndexes(readyIndexes());}
+function pollBatch(batchId){
+  if(!batchId||batchPollTimers.has(batchId))return;
+  const timer=setInterval(async()=>{
+    try{
+      const data=await apiJson('/api/batch/'+encodeURIComponent(batchId));
+      (data.jobs||[]).forEach(job=>{const index=cards.findIndex(card=>card?.jobId===job.job_id);if(index>=0)applyJobUpdate(index,job);});
+      updateOverall(data);
+      if(data.finished){clearInterval(timer);batchPollTimers.delete(batchId);scheduleLibraryRefresh();setTimeout(hideOverall,5000);}
+    }catch{}
+  },800);
+  batchPollTimers.set(batchId,timer);
+}
+function updateOverall(data){
+  const total=Number(data.total)||0,completed=Number(data.completed)||0,pct=Math.round(Number(data.overall_progress)||0);
+  document.getElementById('overallLabel').textContent=`${completed}/${total} · ${pct}%`;
+  document.getElementById('overallFill').style.width=pct+'%';
+  const details=[];if(data.errored)details.push(`${data.errored} failed`);if(data.cancelled)details.push(`${data.cancelled} stopped`);
+  document.getElementById('overallSub').textContent=details.length?details.join(' · '):data.finished?'All done ✓':'Downloading…';
+}
+function hideOverall(){document.getElementById('overall').classList.remove('show');}
+function scheduleLibraryRefresh(){
+  if(libraryRefreshTimer)return;
+  libraryRefreshTimer=setTimeout(async()=>{libraryRefreshTimer=null;await refreshLibrary();await refreshGroups();},1000);
+}
+async function restoreBackendState(){
+  if(location.protocol==='file:')return;
+  try{
+    const library=await apiJson('/api/library');
+    (library.jobs||[]).forEach(job=>{
+      if(cards.some(card=>card?.jobId===job.job_id))return;
+      const index=cards.length;
+      cards.push({url:job.url||'',status:job.status||'queued',title:job.title||'',thumbnail:job.thumbnail||'',jobId:job.job_id,filename:job.filename,progress:job.progress,speed:job.speed,eta:job.eta,size:job.size,downloaded:job.downloaded,error:job.error,deduped:job.deduped,selected:false});
+      if(ACTIVE_DOWNLOAD_STATES.includes(job.status))pollCard(index);
+    });
+    renderCards();
+    for(const batchId of library.fetch_batches||[])await attachFetchBatch(batchId);
+    try{const active=await apiJson('/api/batches/active');(active.batches||[]).forEach(pollBatch);}catch{}
+  }catch{}
+}
+async function loadDownloaderConfig(){
+  if(location.protocol==='file:')return;
+  try{const config=await apiJson('/api/config');if(config.max_concurrent)setCustomSelectValue('concSel',String(config.max_concurrent));}catch{}
+}
+async function setConcurrency(value){
+  try{await apiJson('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({max_concurrent:Number(value)})});}
+  catch(error){toast(error.message);}
+}
 
-    function pickFormat(idx, formatId) {
-      cardData[idx].selectedFormatId = formatId;
-      renderCard(idx);
+// Downloads tools
+function toggleLibraryTools(force){
+  const tools=document.querySelector('.lib-tools');
+  const button=document.getElementById('filterToggle');
+  if(!tools||!button) return;
+  const show=typeof force==='boolean'?force:tools.hidden;
+  tools.hidden=!show;
+  button.classList.toggle('active',show);
+  button.setAttribute('aria-expanded',String(show));
+  button.title=show?'Hide filters':'Show filters';
+  try{localStorage.setItem('reclip_filters_hidden',show?'0':'1');}catch{}
+}
+
+// Custom filter menus
+function closeSelectBoxes(except=null){
+  document.querySelectorAll('.select-box.open').forEach(box=>{
+    if(box===except) return;
+    box.classList.remove('open');
+    box.querySelector('.select-trigger')?.setAttribute('aria-expanded','false');
+  });
+}
+function toggleSelectBox(button){
+  const box=button.closest('.select-box');
+  const opening=!box.classList.contains('open');
+  closeSelectBoxes(box);
+  box.classList.toggle('open',opening);
+  button.setAttribute('aria-expanded',String(opening));
+}
+function chooseSelectOption(option){
+  const box=option.closest('.select-box');
+  const select=document.getElementById(box.dataset.select);
+  if(!select) return;
+  select.value=option.dataset.value??'';
+  box.querySelectorAll('.select-option').forEach(item=>item.setAttribute('aria-selected',String(item===option)));
+  const trigger=box.querySelector('.select-trigger');
+  trigger.querySelector('.select-label').textContent=option.querySelector('span:nth-child(2)')?.textContent||option.textContent.trim();
+  const icon=option.querySelector('.select-icon');
+  if(icon) trigger.querySelector('.select-icon').innerHTML=icon.innerHTML;
+  box.classList.remove('open');
+  trigger.setAttribute('aria-expanded','false');
+  select.dispatchEvent(new Event('change',{bubbles:true}));
+  if(['fType','fSort','fGroup','fDate'].includes(select.id)) filterLib();
+  if(select.id==='concSel'){
+    try{localStorage.setItem('reclip_concurrency',select.value);}catch{}
+    setConcurrency(select.value);
+  }
+}
+function setCustomSelectValue(id,value){
+  const select=document.getElementById(id);
+  const box=document.querySelector(`.select-box[data-select="${id}"]`);
+  if(!select||!box) return false;
+  const option=[...box.querySelectorAll('.select-option')].find(item=>item.dataset.value===String(value));
+  if(!option) return false;
+  select.value=String(value);
+  box.querySelectorAll('.select-option').forEach(item=>item.setAttribute('aria-selected',String(item===option)));
+  box.querySelector('.select-label').textContent=option.querySelector('span:nth-child(2)')?.textContent||option.textContent.trim();
+  const icon=option.querySelector('.select-icon');
+  if(icon) box.querySelector('.select-trigger .select-icon').innerHTML=icon.innerHTML;
+  return true;
+}
+document.addEventListener('click',event=>{
+  if(!event.target.closest('.select-box')) closeSelectBoxes();
+  if(!event.target.closest('.split-cta')) closeFetchMenu();
+  const pop=document.getElementById('groupPopover');
+  if(pop&&!pop.hidden&&!event.target.closest('#groupPopover')&&!event.target.closest('#groupMenuBtn')) closeGroupsPopover();
+});
+
+// Groups
+let groupsMeta=[];
+let allGroups=[];
+let editingGroupId='';
+let groupsApiAvailable=true;
+const groupIconSvg=`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 13 9 5 9-5"/></svg>`;
+function toggleGroupsPopover(event){
+  event?.stopPropagation();
+  const pop=document.getElementById('groupPopover');
+  const show=pop.hidden;
+  pop.hidden=!show;
+  document.getElementById('groupMenuBtn').setAttribute('aria-expanded',String(show));
+  closeSelectBoxes();
+  if(show){ refreshGroups(); setTimeout(()=>document.getElementById('groupNameInput')?.focus(),40); }
+}
+function closeGroupsPopover(){
+  const pop=document.getElementById('groupPopover');
+  if(pop) pop.hidden=true;
+  document.getElementById('groupMenuBtn')?.setAttribute('aria-expanded','false');
+  editingGroupId='';
+}
+async function refreshGroups(){
+  if(location.protocol==='file:'){
+    groupsApiAvailable=false;
+    const counts=new Map();
+    libData.forEach(file=>{if(file.group_id)counts.set(file.group_id,{id:file.group_id,name:file.group||file.group_id,count:(counts.get(file.group_id)?.count||0)+1});});
+    allGroups=[...counts.values()];
+    groupsMeta=[{id:'',name:'Ungrouped',count:libData.filter(file=>!file.group_id).length},...allGroups];
+    syncGroupControls(); renderGroupList(); return;
+  }
+  try{
+    const res=await fetch('/api/groups');
+    if(!res.ok) throw new Error('Could not load groups');
+    const data=await res.json();
+    groupsMeta=data.groups||[];
+    allGroups=groupsMeta.filter(group=>group.id!=='');
+    groupsApiAvailable=true;
+  }catch{
+    groupsApiAvailable=false;
+    const counts=new Map();
+    libData.forEach(file=>{ if(file.group_id) counts.set(file.group_id,{id:file.group_id,name:file.group||file.group_id,count:(counts.get(file.group_id)?.count||0)+1}); });
+    allGroups=[...counts.values()];
+    groupsMeta=[{id:'',name:'Ungrouped',count:libData.filter(file=>!file.group_id).length},...allGroups];
+  }
+  syncGroupControls();
+  renderGroupList();
+}
+function syncGroupControls(){
+  const save=document.getElementById('groupSel');
+  const saved=save?.value||'';
+  if(save){
+    save.innerHTML='<option value="">No group</option>'+allGroups.map(group=>`<option value="${escAttr(group.id)}">${esc(group.name)}</option>`).join('');
+    let wanted=saved;
+    try{wanted=wanted||localStorage.getItem('reclip_group')||'';}catch{}
+    if(![...save.options].some(option=>option.value===wanted)) wanted='';
+    save.value=wanted;
+    save.onchange=()=>{try{localStorage.setItem('reclip_group',save.value);}catch{}};
+    const saveMenu=document.getElementById('groupSelMenu');
+    if(saveMenu){
+      const folderIcon=`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7h6l2 2h10v10H3z"/></svg>`;
+      const saveOption=(value,label,icon)=>`<button class="select-option" type="button" data-value="${escAttr(value)}" aria-selected="false" onclick="chooseSelectOption(this)"><span class="select-icon">${icon}</span><span>${esc(label)}</span><span class="check">✓</span></button>`;
+      saveMenu.innerHTML=saveOption('','No group',folderIcon)+allGroups.map(group=>saveOption(group.id,group.name,groupIconSvg)).join('');
+      setCustomSelectValue('groupSel',wanted);
     }
+  }
+  const select=document.getElementById('fGroup');
+  const current=select?.value||'all';
+  if(select) select.innerHTML='<option value="all">All groups</option><option value="ungrouped">Ungrouped</option>'+allGroups.map(group=>`<option value="${escAttr(group.id)}">${esc(group.name)}</option>`).join('');
+  const menu=document.getElementById('fGroupMenu');
+  if(menu){
+    const option=(value,label,icon=groupIconSvg)=>`<button class="select-option" type="button" data-value="${escAttr(value)}" aria-selected="false" onclick="chooseSelectOption(this)"><span class="select-icon">${icon}</span><span>${esc(label)}</span><span class="check">✓</span></button>`;
+    const ungroupedIcon=`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7h6l2 2h10v10H3z"/><path d="m5 4 14 16"/></svg>`;
+    menu.innerHTML=option('all','All groups')+option('ungrouped','Ungrouped',ungroupedIcon)+allGroups.map(group=>option(group.id,group.name)).join('');
+    if(!setCustomSelectValue('fGroup',current)) setCustomSelectValue('fGroup','all');
+  }
+}
+function renderGroupList(){
+  const list=document.getElementById('groupList');
+  const total=document.getElementById('groupTotal');
+  if(total) total.textContent=`${allGroups.length} group${allGroups.length===1?'':'s'}`;
+  if(!list) return;
+  if(!allGroups.length){ list.innerHTML='<div class="group-status">No groups yet</div>'; return; }
+  list.innerHTML=allGroups.map(group=>{
+    const id=encodeURIComponent(group.id);
+    if(editingGroupId===group.id) return `<div class="group-row"><span class="group-row-icon">${groupIconSvg}</span><input class="group-edit-input" id="groupEditInput" value="${escAttr(group.name)}" maxlength="80" onkeydown="if(event.key==='Enter')commitGroupRename('${id}');if(event.key==='Escape'){editingGroupId='';renderGroupList()}"><button class="group-action" title="Save" onclick="commitGroupRename('${id}')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m5 12 4 4L19 6"/></svg></button><button class="group-action" title="Cancel" onclick="editingGroupId='';renderGroupList()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>`;
+    return `<div class="group-row"><span class="group-row-icon">${groupIconSvg}</span><span class="group-name" title="${escAttr(group.name)}">${esc(group.name)}</span><span class="group-count">${Number(group.count)||0}</span><button class="group-action" title="Rename" onclick="startGroupRename('${id}')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m4 16-1 5 5-1L19 9l-4-4L4 16Z"/><path d="m13 7 4 4"/></svg></button><button class="group-action danger" title="Delete" onclick="deleteGroup('${id}')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13"/></svg></button></div>`;
+  }).join('');
+  if(editingGroupId) setTimeout(()=>{ const input=document.getElementById('groupEditInput'); input?.focus(); input?.select(); },0);
+}
+function startGroupRename(encodedId){ editingGroupId=decodeURIComponent(encodedId); renderGroupList(); }
+async function groupRequest(path,options){
+  const res=await fetch(path,options);
+  let data={}; try{data=await res.json();}catch{}
+  if(!res.ok) throw new Error(data.error||`Group request failed (${res.status})`);
+  return data;
+}
+async function addGroup(){
+  const input=document.getElementById('groupNameInput');
+  const name=input?.value.trim(); if(!name) return;
+  if(!groupsApiAvailable){ toast('Group editing requires the ReClip server'); return; }
+  try{ await groupRequest('/api/groups',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})}); input.value=''; await refreshGroups(); await refreshLibrary(); }
+  catch(error){ toast(error.message); }
+}
+async function commitGroupRename(encodedId){
+  const id=decodeURIComponent(encodedId); const name=document.getElementById('groupEditInput')?.value.trim(); if(!name) return;
+  try{ await groupRequest('/api/groups/'+encodeURIComponent(id),{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})}); editingGroupId=''; await refreshGroups(); await refreshLibrary(); }
+  catch(error){ toast(error.message); }
+}
+async function deleteGroup(encodedId){
+  const id=decodeURIComponent(encodedId); const group=allGroups.find(item=>item.id===id);
+  if(!confirm(`Delete group "${group?.name||id}"?\nIts files will be moved to No group.`)) return;
+  try{ await groupRequest('/api/groups/'+encodeURIComponent(id),{method:'DELETE'}); await refreshGroups(); await refreshLibrary(); }
+  catch(error){ toast(error.message); }
+}
 
-    async function dlCard(idx) {
-      const c = cardData[idx];
-      c.status = 'downloading';
-      c.error = null;
-      renderCard(idx);
-
-      try {
-        const res = await fetch('/api/download', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            url: c.url,
-            format: currentFormat,
-            format_id: c.selectedFormatId,
-            title: c.title || '',
-          }),
-        });
-        const data = await res.json();
-        if (data.error) {
-          c.status = 'error';
-          c.error = data.error;
-          renderCard(idx);
-          return;
-        }
-        c.jobId = data.job_id;
-        pollCard(idx);
-      } catch (err) {
-        c.status = 'error';
-        c.error = err.message;
-        renderCard(idx);
-      }
+// Library + MEGA selection
+const megaSelected=new Set();
+let megaAccounts=[];
+let megaUploads=[];
+let megaPollTimer=null;
+let megaSavedKeys=new Set();
+const MEGA_ICON_PATH='M12 0C5.372 0 0 5.372 0 12s5.372 12 12 12 12-5.372 12-12S18.628 0 12 0zm6.23 16.244a.371.371 0 0 1-.373.372H16.29a.371.371 0 0 1-.372-.372v-4.828c0-.04-.046-.06-.08-.033l-3.32 3.32a.742.742 0 0 1-1.043 0l-3.32-3.32c-.027-.027-.08-.007-.08.033v4.828a.371.371 0 0 1-.372.372H6.136a.371.371 0 0 1-.372-.372V7.757c0-.206.166-.372.372-.372h1.076a.75.75 0 0 1 .525.22l4.13 4.13a.18.18 0 0 0 .26 0l4.13-4.13c.14-.14.325-.22.525-.22h1.075c.206 0 .372.166.372.372z';
+try{megaSavedKeys=new Set(JSON.parse(localStorage.getItem('reclip_mega_saved')||'[]'));}catch{}
+function megaFileKey(file){ return JSON.stringify([file.group_id||'',file.filename||'']); }
+function syncMegaSavedKeys(jobs,rerender=true){
+  const before=megaSavedKeys.size;
+  (jobs||[]).filter(job=>job.status==='done').forEach(job=>megaSavedKeys.add(JSON.stringify([job.group_id||'',job.filename||''])));
+  try{localStorage.setItem('reclip_mega_saved',JSON.stringify([...megaSavedKeys]));}catch{}
+  if(rerender&&megaSavedKeys.size!==before) filterLib();
+}
+async function loadMegaBadgeStatus(){
+  if(location.protocol==='file:') return;
+  try{const data=await megaApi('/uploads?limit=300');syncMegaSavedKeys(data.uploads||[]);}
+  catch{}
+}
+function selectedMegaFiles(){
+  const byKey=new Map(libData.map(file=>[megaFileKey(file),file]));
+  return [...megaSelected].map(key=>byKey.get(key)).filter(Boolean);
+}
+function toggleMegaCard(encodedKey,event){
+  if(event?.target?.closest('button,a,.lib-thumb')) return;
+  if(event?.type==='keydown'){
+    if(!['Enter',' '].includes(event.key)) return;
+    event.preventDefault();
+  }
+  let key=''; try{key=decodeURIComponent(encodedKey);}catch{return;}
+  if(megaSelected.has(key)) megaSelected.delete(key); else megaSelected.add(key);
+  renderMegaSelection();
+  filterLib();
+}
+function clearMegaSelection(){ megaSelected.clear(); renderMegaSelection(); filterLib(); }
+function renderMegaSelection(){
+  const files=selectedMegaFiles();
+  const bar=document.getElementById('megaSelection');
+  const count=document.getElementById('megaSelectionCount');
+  if(bar) bar.hidden=files.length===0;
+  if(count) count.textContent=`${files.length} file${files.length===1?'':'s'} · ${fmtBytes(totalBytes(files))}`;
+  const summary=document.getElementById('megaSelectedSummary');
+  if(summary) summary.textContent=files.length?`${files.length} file selected (${fmtBytes(totalBytes(files))}). Automatic mode distributes files by available storage.`:'No files selected. Select files from Downloads first.';
+  const upload=document.getElementById('megaUploadBtn');
+  if(upload) upload.disabled=files.length===0;
+}
+function formatLibraryDate(timestamp){
+  const value=Number(timestamp)||0; if(!value) return '';
+  const date=new Date(value*1000); const today=new Date();
+  if(date.toDateString()===today.toDateString()) return 'Today';
+  return date.toLocaleDateString('en-GB',{day:'2-digit',month:'short'});
+}
+function formatLibraryDuration(seconds){
+  seconds=Math.round(Number(seconds)||0); if(!seconds) return '—';
+  const h=Math.floor(seconds/3600),m=Math.floor((seconds%3600)/60),s=seconds%60;
+  return h?`${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`:`${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+}
+function libraryHost(url){ try{return new URL(url).hostname.replace(/^www\./,'');}catch{return '';} }
+function normalizeLibraryFile(file){
+  const filename=file.filename||'';
+  const compound=filename.toLowerCase().match(/\.((?:7z|zip|rar)\.\d{3})$/);
+  const ext=compound?compound[1]:(filename.split('.').pop()||'file').toLowerCase();
+  const audio=['mp3','m4a','aac','ogg','wav','flac'].includes(ext);
+  const createdAt=Number(file.created_at||file.mtime)||0;
+  return {
+    ...file,
+    name:file.title||filename||'Unknown file',
+    site:libraryHost(file.url),
+    group:file.group_name||'',
+    group_id:file.group_id||'',
+    size:fmtBytes(Number(file.size)||0),
+    sizeBytes:Number(file.size)||0,
+    res:file.resolution||'',
+    dur:formatLibraryDuration(file.duration),
+    ext,
+    date:formatLibraryDate(createdAt),
+    thumb:file.has_thumb?`/api/library/thumb?f=${encodeURIComponent(filename)}`:'',
+    type:audio?'audio':'video',
+    createdAt,
+    isDemo:false,
+  };
+}
+async function refreshLibrary(showToast=false){
+  if(location.protocol==='file:'){if(showToast)toast('Offline preview data');return;}
+  try{
+    const response=await fetch('/api/library');
+    if(!response.ok) throw new Error('Downloads could not be loaded');
+    const data=await response.json();
+    libData=(data.files||[]).map(normalizeLibraryFile);
+    const validKeys=new Set(libData.map(megaFileKey));
+    [...megaSelected].forEach(key=>{if(!validKeys.has(key))megaSelected.delete(key);});
+    filterLib(); renderMegaSelection();
+    if(showToast) toast('Downloads refreshed');
+  }catch(error){
+    if(showToast) toast(location.protocol==='file:'?'Offline preview data':error.message);
+  }
+}
+function openLibraryFile(encodedUrl){
+  const url=decodeURIComponent(encodedUrl||'');
+  if(url) window.open(url,'_blank','noopener'); else toast('No source URL available');
+}
+async function deleteLibraryFile(encodedFilename,isDemo=false){
+  const filename=decodeURIComponent(encodedFilename||'');
+  if(isDemo){toast('Delete requires the ReClip server');return;}
+  if(!filename||!confirm(`Delete "${filename}" from the server?`)) return;
+  try{
+    const response=await fetch('/api/library/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({f:filename})});
+    const data=await response.json().catch(()=>({}));
+    if(!response.ok) throw new Error(data.error||'Delete failed');
+    await refreshLibrary();
+  }catch(error){toast(error.message);}
+}
+function filterByTag(kind,encodedValue){
+  const value=decodeURIComponent(encodedValue||'');
+  if(kind==='group'){
+    if(!setCustomSelectValue('fGroup',value)) return;
+  }else{
+    const search=document.getElementById('libSearch');
+    search.value=value;
+  }
+  filterLib();
+}
+function renderLib(list){
+  filteredData=list;
+  const wrap=document.getElementById('libList');
+  const cnt=document.getElementById('libCount');
+  const totalEl=document.getElementById('libTotal');
+  const detailEl=document.getElementById('libCountDetail');
+  const sumLeft=document.getElementById('libSummaryLeft');
+  const sumRight=document.getElementById('libSummaryRight');
+  const totalAll=totalBytes(libData),totalFiltered=totalBytes(list),durFiltered=totalDuration(list);
+  cnt.textContent=libData.length;
+  totalEl.textContent=fmtBytes(totalFiltered);
+  totalEl.title=list.length===libData.length?`Total of all files: ${fmtBytes(totalAll)}`:`Filtered: ${fmtBytes(totalFiltered)} of ${fmtBytes(totalAll)}`;
+  if(list.length!==libData.length){detailEl.style.display='';detailEl.textContent=`${list.length} shown`;totalEl.style.background='var(--accent)';totalEl.style.color='#fff';totalEl.style.borderColor='var(--accent)';}
+  else{detailEl.style.display='none';totalEl.style.background='';totalEl.style.color='';totalEl.style.borderColor='';}
+  if(sumLeft){
+    sumLeft.innerHTML=`<b>${list.length} file${list.length===1?'':'s'}</b> <span class="dot"></span> ${fmtBytes(totalFiltered)} ${list.length!==libData.length?`<span class="muted">· of ${fmtBytes(totalAll)}</span>`:''}`;
+    sumRight.textContent=durFiltered!=='—'?`Duration ${durFiltered}`:'';
+  }
+  if(!list.length){wrap.innerHTML=`<div class="lib-empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M8 10h8M8 14h5"/></svg><div>${libData.length?'No matches':'No downloads yet'}</div></div>`;return;}
+  wrap.innerHTML=list.map(file=>{
+    const thumb=file.thumb?`<img src="${escAttr(file.thumb)}" alt="" loading="lazy">`:`<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="m9 8 7 4-7 4V8Z"/></svg>`;
+    const ext=(file.ext||'file').toUpperCase();
+    const key=megaFileKey(file),encodedKey=encodeURIComponent(key),selected=megaSelected.has(key);
+    const megaBadge=megaSavedKeys.has(key)?`<span class="badge-mega" title="Saved to MEGA"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="${MEGA_ICON_PATH}"/></svg></span>`:'';
+    const openUrl=encodeURIComponent(file.url||'');
+    const filename=encodeURIComponent(file.filename||file.name||'');
+    const downloadHref=file.isDemo?'#':`/api/library/download?f=${encodeURIComponent(file.filename||'')}`;
+    const downloadClick=file.isDemo?`event.preventDefault();toast('Redownload requires the ReClip server')`:'';
+    return `<div class="lib-item${selected?' mega-selected':''}" role="button" tabindex="0" aria-pressed="${selected}" aria-label="${selected?'Deselect':'Select'} ${escAttr(file.name)} for MEGA" onclick="toggleMegaCard('${encodedKey}',event)" onkeydown="toggleMegaCard('${encodedKey}',event)">
+      <div class="lib-thumb" onclick="event.stopPropagation();openLibraryFile('${openUrl}')" title="Open source">${thumb}${megaBadge}</div>
+      <div class="lib-main">
+        <div class="lib-name" title="${escAttr(file.name)}">${esc(file.name)}</div>
+        <div class="lib-tags-row">
+          <div class="lib-tags">
+            ${file.site?`<button class="tag accent" onclick="event.stopPropagation();filterByTag('site','${encodeURIComponent(file.site)}')" title="Show ${escAttr(file.site)} downloads">${esc(file.site)}</button>`:''}
+            ${file.group?`<button class="tag" onclick="event.stopPropagation();filterByTag('group','${encodeURIComponent(file.group_id)}')" title="Show ${escAttr(file.group)} group">${esc(file.group)}</button>`:''}
+            <button class="tag" onclick="event.stopPropagation();filterByTag('format','${encodeURIComponent(file.ext)}')" title="Show ${escAttr(ext)} files">${esc(ext)}</button>
+          </div>
+          <div class="lib-acts">
+            <a class="lib-btn dl" href="${downloadHref}" download onclick="event.stopPropagation();${downloadClick}" title="Redownload" aria-label="Redownload ${escAttr(file.name)}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v11"/><path d="m8 10 4 4 4-4"/><path d="M5 18v2h14v-2"/></svg></a>
+            <button class="lib-btn" onclick="event.stopPropagation();deleteLibraryFile('${filename}',${file.isDemo?'true':'false'})" title="Delete" aria-label="Delete ${escAttr(file.name)}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="m9 9 6 6M15 9l-6 6"/></svg></button>
+          </div>
+        </div>
+        <div class="lib-meta"><b>${esc(file.size)}</b>${file.res&&file.res!=='—'?`<span class="dot"></span>${esc(file.res)}`:''}${file.dur&&file.dur!=='—'?`<span class="dot"></span>${esc(file.dur)}`:''}</div>
+        <div class="lib-sub">${esc(file.date||file.filename||'')}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+function filterLib(){
+  const q=(document.getElementById('libSearch').value||'').toLowerCase().trim();
+  const type=document.getElementById('fType').value;
+  const group=document.getElementById('fGroup').value;
+  const dateFilter=document.getElementById('fDate').value;
+  const now=Date.now()/1000;
+  let out=[...libData];
+  if(q) out=out.filter(file=>(`${file.name} ${file.filename||''} ${file.site} ${file.group} ${file.size} ${file.res} ${file.ext}`).toLowerCase().includes(q));
+  if(group==='ungrouped') out=out.filter(file=>!file.group_id);
+  else if(group!=='all') out=out.filter(file=>file.group_id===group);
+  if(type) out=out.filter(file=>file.type===type);
+  if(dateFilter==='today') out=out.filter(file=>file.date==='Today');
+  else if(dateFilter) out=out.filter(file=>!file.createdAt||now-file.createdAt<=Number(dateFilter)*86400);
+  const sort=document.getElementById('fSort').value;
+  if(sort==='az') out.sort((a,b)=>a.name.localeCompare(b.name));
+  else if(sort==='big') out.sort((a,b)=>(b.sizeBytes||parseSize(b.size))-(a.sizeBytes||parseSize(a.size)));
+  else if(sort==='old') out.sort((a,b)=>(a.createdAt||0)-(b.createdAt||0));
+  else out.sort((a,b)=>(b.createdAt||0)-(a.createdAt||0));
+  renderLib(out);
+}
+function setView(v){
+  document.getElementById('viewList').classList.toggle('active', v==='list');
+  document.getElementById('viewGrid').classList.toggle('active', v==='grid');
+  document.getElementById('libList').classList.toggle('grid', v==='grid');
+}
+// MEGA accounts and transfer queue
+function setMegaStatus(id,message,error=false){
+  const element=document.getElementById(id); if(!element) return;
+  element.hidden=!message; element.textContent=message||''; element.classList.toggle('error',!!error);
+}
+async function megaApi(path,options={}){
+  if(location.protocol==='file:') throw new Error('Open this page through the ReClip server to use MEGA.');
+  const response=await fetch('/api/mega'+path,options);
+  let data={}; try{data=await response.json();}catch{}
+  if(!response.ok) throw new Error(data.error||`MEGA request failed (${response.status})`);
+  return data;
+}
+async function openMega(){
+  const overlay=document.getElementById('megaOverlay'); if(!overlay) return;
+  overlay.hidden=false; document.body.style.overflow='hidden';
+  try{const saved=localStorage.getItem('reclip_mega_folder');if(saved)document.getElementById('megaFolder').value=saved;}catch{}
+  renderMegaSelection();
+  await Promise.all([loadMegaAccounts(false),loadMegaJobs()]);
+}
+function closeMega(){
+  document.getElementById('megaOverlay').hidden=true; document.body.style.overflow='';
+  if(megaPollTimer) clearTimeout(megaPollTimer); megaPollTimer=null;
+}
+async function loadMegaAccounts(refresh=false){
+  setMegaStatus('megaAccountStatus',refresh?'Refreshing storage quotas…':'');
+  try{
+    const data=await megaApi('/accounts'+(refresh?'?refresh=1':''));
+    megaAccounts=data.accounts||[]; renderMegaAccounts();
+    if(!data.available) setMegaStatus('megaAccountStatus',data.error||'MEGA helper is unavailable.',true);
+    else if(refresh){
+      const failed=megaAccounts.filter(account=>account.quota?.error).length;
+      setMegaStatus('megaAccountStatus',failed?`${failed} account quota could not be read.`:'Storage quotas are up to date.',failed>0);
     }
+    const form=document.getElementById('megaAccountForm');
+    if(form) [...form.elements].forEach(element=>{element.disabled=!data.available;});
+  }catch(error){setMegaStatus('megaAccountStatus',error.message,true);}
+}
+function renderMegaAccounts(){
+  const list=document.getElementById('megaAccountList');
+  const select=document.getElementById('megaDestinationAccount');
+  if(!list||!select) return;
+  if(!megaAccounts.length) list.innerHTML='<div class="mega-empty">No MEGA accounts configured.</div>';
+  else list.innerHTML=megaAccounts.map(account=>{
+    const quota=account.quota||{};
+    const valid=!quota.error&&Number.isFinite(Number(quota.total));
+    const total=Number(quota.total)||0,used=Number(quota.used)||0;
+    const percent=total?Math.min(100,Math.max(0,used/total*100)):0;
+    const quotaText=quota.error?quota.error:valid?`${fmtBytes(used)} used · ${fmtBytes(quota.free)} free`:'Quota has not been checked';
+    return `<div class="mega-account">
+      <div class="mega-account-top">
+        <div class="mega-account-name"><strong>${esc(account.label||'MEGA')}</strong><span>${esc(account.email||'')}</span></div>
+        <label class="mega-toggle" title="Include in automatic allocation"><input type="checkbox" ${account.enabled?'checked':''} onchange="toggleMegaAccount('${account.id}',this.checked)"> active</label>
+        <button class="mega-account-del" type="button" title="Delete account" onclick="deleteMegaAccount('${account.id}')">×</button>
+      </div>
+      <div class="mega-quota"><div class="mega-quota-meta"><span>${esc(quotaText)}</span><span>${valid?Math.round(percent)+'%':''}</span></div><div class="mega-quota-track"><div class="mega-quota-fill" style="width:${valid?percent:0}%"></div></div></div>
+    </div>`;
+  }).join('');
+  const current=select.value||'auto';
+  select.innerHTML='<option value="auto">Automatic — most free space</option>'+megaAccounts.filter(account=>account.enabled&&account.quota&&!account.quota.error).map(account=>`<option value="${account.id}">${esc(account.label)} — ${fmtBytes(account.available_for_upload)} free</option>`).join('');
+  if([...select.options].some(option=>option.value===current)) select.value=current;
+}
+async function addMegaAccount(event){
+  event.preventDefault();
+  const button=document.getElementById('megaAddBtn');
+  const payload={label:document.getElementById('megaLabel').value.trim(),email:document.getElementById('megaEmail').value.trim(),password:document.getElementById('megaPassword').value};
+  if(button){button.disabled=true;button.textContent='Verifying account…';}
+  setMegaStatus('megaAccountStatus','Signing in and reading storage quota…');
+  try{
+    await megaApi('/accounts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    document.getElementById('megaAccountForm').reset();
+    setMegaStatus('megaAccountStatus','Account added successfully.');
+    await loadMegaAccounts(false);
+  }catch(error){setMegaStatus('megaAccountStatus',error.message,true);}
+  finally{if(button){button.disabled=false;button.textContent='Add account & verify quota';}}
+}
+async function toggleMegaAccount(id,enabled){
+  try{await megaApi('/accounts/'+encodeURIComponent(id),{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled})});await loadMegaAccounts(false);}
+  catch(error){setMegaStatus('megaAccountStatus',error.message,true);await loadMegaAccounts(false);}
+}
+async function deleteMegaAccount(id){
+  const account=megaAccounts.find(item=>item.id===id);
+  if(!confirm(`Remove MEGA account "${account?.label||id}" from ReClip?\nAlready uploaded files will not be deleted.`)) return;
+  try{await megaApi('/accounts/'+encodeURIComponent(id),{method:'DELETE'});setMegaStatus('megaAccountStatus','Account removed from ReClip.');await loadMegaAccounts(false);}
+  catch(error){setMegaStatus('megaAccountStatus',error.message,true);}
+}
+async function startMegaUpload(event){
+  event.preventDefault();
+  const files=selectedMegaFiles();
+  if(!files.length){setMegaStatus('megaUploadStatus','Select at least one file from Downloads.',true);return;}
+  if(files.some(file=>file.isDemo)){setMegaStatus('megaUploadStatus','Offline preview files cannot be uploaded. Open this page through ReClip.',true);return;}
+  const folder=document.getElementById('megaFolder').value.trim();
+  const button=document.getElementById('megaUploadBtn');
+  if(button){button.disabled=true;button.textContent='Checking quotas…';}
+  setMegaStatus('megaUploadStatus','Reading live quotas and planning account allocation…');
+  try{
+    const result=await megaApi('/uploads',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+      files:files.map(file=>({filename:file.filename,group_id:file.group_id||''})),
+      account_id:document.getElementById('megaDestinationAccount').value||'auto',
+      folder,
+      preserve_groups:document.getElementById('megaPreserveGroups').checked,
+    })});
+    try{localStorage.setItem('reclip_mega_folder',folder);}catch{}
+    megaSelected.clear(); renderMegaSelection(); filterLib();
+    setMegaStatus('megaUploadStatus',`${(result.jobs||[]).length} file(s) added to the MEGA queue.`);
+    await Promise.all([loadMegaJobs(),loadMegaAccounts(false)]);
+  }catch(error){setMegaStatus('megaUploadStatus',error.message,true);}
+  finally{if(button){button.disabled=selectedMegaFiles().length===0;button.textContent='Queue upload';}}
+}
+async function loadMegaJobs(){
+  if(megaPollTimer) clearTimeout(megaPollTimer); megaPollTimer=null;
+  try{const data=await megaApi('/uploads?limit=300');megaUploads=data.uploads||[];syncMegaSavedKeys(megaUploads);renderMegaJobs();}
+  catch(error){setMegaStatus('megaUploadStatus',error.message,true);return;}
+  if(megaUploads.some(job=>['queued','uploading'].includes(job.status))) megaPollTimer=setTimeout(loadMegaJobs,1200);
+}
+function renderMegaJobs(){
+  const list=document.getElementById('megaJobList'); if(!list) return;
+  if(!megaUploads.length){list.innerHTML='<div class="mega-empty">No MEGA uploads yet.</div>';return;}
+  const labels={queued:'queued',uploading:'uploading',done:'done',error:'error',cancelled:'cancelled'};
+  list.innerHTML=megaUploads.map(job=>{
+    const active=['queued','uploading'].includes(job.status);
+    const progress=Math.min(100,Math.max(0,Number(job.progress)||0));
+    const transfer=job.status==='uploading'?`${fmtBytes(job.uploaded_bytes)} / ${fmtBytes(job.size)}${job.speed?' · '+fmtBytes(job.speed)+'/s':''}${job.eta!=null?' · ETA '+fmtEtaMega(job.eta):''}`:fmtBytes(job.size);
+    return `<div class="mega-job ${job.status||''}"><div class="mega-job-top"><span class="mega-job-name" title="${escAttr(job.filename||'')}">${esc(job.filename||'Unknown file')}</span><span class="mega-job-state ${job.status||''}">${labels[job.status]||esc(job.status||'')}</span>${active?`<button class="mega-account-del" type="button" title="Cancel upload" onclick="cancelMegaUpload('${job.id}')">×</button>`:''}</div><div class="mega-job-track" style="margin-top:7px"><div class="mega-job-fill" style="width:${progress}%"></div></div><div class="mega-job-meta">${esc(job.account_label||'')} · ${esc(transfer)}<br>/${esc(job.remote_path||'')}</div>${job.error?`<div class="mega-job-error">${esc(job.error)}</div>`:''}</div>`;
+  }).join('');
+}
+function fmtEtaMega(seconds){seconds=Math.max(0,Math.round(Number(seconds)||0));if(seconds<60)return`${seconds}s`;const minutes=Math.floor(seconds/60);return`${minutes}m ${seconds%60}s`;}
+async function cancelMegaUpload(id){
+  try{await megaApi('/uploads/'+encodeURIComponent(id)+'/cancel',{method:'POST'});await loadMegaJobs();}
+  catch(error){setMegaStatus('megaUploadStatus',error.message,true);}
+}
+async function clearMegaFinished(){
+  try{await megaApi('/uploads/finished',{method:'DELETE'});await loadMegaJobs();}
+  catch(error){setMegaStatus('megaUploadStatus',error.message,true);}
+}
 
-    function pollCard(idx) {
-      const c = cardData[idx];
-      const iv = setInterval(async () => {
-        try {
-          const res = await fetch(`/api/status/${c.jobId}`);
-          const data = await res.json();
-          if (data.status === 'done') {
-            clearInterval(iv);
-            c.status = 'done';
-            c.filename = data.filename;
-            renderCard(idx);
-            saveCard(idx);
-          } else if (data.status === 'error') {
-            clearInterval(iv);
-            c.status = 'error';
-            c.error = data.error;
-            renderCard(idx);
-          }
-        } catch {
-          clearInterval(iv);
-          c.status = 'error';
-          c.error = 'Lost connection to server';
-          renderCard(idx);
-        }
-      }, 1000);
-    }
-
-    function saveCard(idx) {
-      const c = cardData[idx];
-      if (!c.jobId) return;
-      const a = document.createElement('a');
-      a.href = `/api/file/${c.jobId}`;
-      a.download = c.filename || '';
-      a.click();
-    }
-
-    async function dlAll() {
-      const btn = document.querySelector('.dl-all-btn');
-      if (btn) { btn.disabled = true; btn.textContent = 'Downloading...'; }
-
-      for (let i = 0; i < cardData.length; i++) {
-        if (cardData[i].status === 'ready') {
-          await dlCard(i);
-        }
-      }
-
-      if (btn) { btn.disabled = false; btn.textContent = 'Download All'; }
-    }
-  </script>
+document.addEventListener('keydown',event=>{
+  if(event.key==='Escape'){
+    const overlay=document.getElementById('megaOverlay');
+    if(overlay&&!overlay.hidden) closeMega();
+    else{closeSelectBoxes();closeGroupsPopover();closeFetchMenu();}
+  }
+});
+renderLib(libData);
+try{
+  if(localStorage.getItem('reclip_filters_hidden')==='1')toggleLibraryTools(false);
+  setFetchAction(localStorage.getItem('reclip_fetch_action')==='download',false);
+  setDropMode(localStorage.getItem('reclip_mode')||'video');
+  const savedFormat=localStorage.getItem('reclip_format')||'video';
+  const formatButton=document.querySelector(`.seg button[data-format="${savedFormat}"]`);
+  if(formatButton)setFormat(formatButton);
+  const savedConcurrency=localStorage.getItem('reclip_concurrency')||'3';
+  if([...document.getElementById('concSel').options].some(option=>option.value===savedConcurrency))setCustomSelectValue('concSel',savedConcurrency);
+  ta.value=localStorage.getItem('reclip_urls')||'';
+}catch{}
+refreshLibrary();
+refreshGroups();
+loadMegaBadgeStatus();
+loadDownloaderConfig();
+restoreBackendState();
+updateCount();updateGoLabel();renderCards();
+const s=document.createElement('style');s.textContent='@keyframes spin{to{transform:rotate(360deg)}} @keyframes sh{to{background-position:200% 0}}';document.head.appendChild(s);
+</script>
 </body>
 </html>

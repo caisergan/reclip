@@ -1,0 +1,2810 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ReClip — Free Media Downloader</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #f4f1eb;
+      --fg: #3a3a38;
+      --accent: #e85d2a;
+      --accent-hover: #d04e1f;
+      --muted: #9c9889;
+      --card: #fff;
+      --card-border: #e2ded6;
+      --success: #2d8a4e;
+      --error: #c43d3d;
+      --radius: 14px;
+      --shimmer: linear-gradient(90deg, #ebe8e2 25%, #f0ede7 50%, #ebe8e2 75%);
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: 'DM Mono', monospace;
+      background: var(--bg);
+      color: var(--fg);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    body::after {
+      content: '';
+      position: fixed;
+      inset: 0;
+      opacity: 0.03;
+      pointer-events: none;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+      background-size: 128px;
+    }
+
+    .page {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 64px 32px 96px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 380px;
+      gap: 44px;
+      align-items: start;
+    }
+    .main-col { min-width: 0; }
+
+    .brand { margin-bottom: 48px; }
+    .brand h1 {
+      font-family: 'Instrument Serif', serif;
+      font-size: 4.2rem;
+      font-weight: 400;
+      letter-spacing: -0.03em;
+      line-height: 1;
+      color: var(--fg);
+    }
+    .brand h1 em { font-style: italic; color: var(--accent); }
+    .brand p {
+      margin-top: 10px;
+      font-size: 0.78rem;
+      color: var(--muted);
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    textarea {
+      width: 100%;
+      padding: 18px 20px;
+      border: 1.5px solid var(--card-border);
+      border-radius: var(--radius);
+      background: var(--card);
+      color: var(--fg);
+      font-family: 'DM Mono', monospace;
+      font-size: 0.9rem;
+      line-height: 1.6;
+      outline: none;
+      resize: vertical;
+      min-height: 84px;
+      transition: border-color 0.25s, box-shadow 0.25s;
+      margin-bottom: 8px;
+    }
+    textarea:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(232, 93, 42, 0.08);
+    }
+    textarea::placeholder { color: var(--muted); }
+
+    .input-meta {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 22px;
+      flex-wrap: wrap;
+    }
+    .hint {
+      font-size: 0.72rem;
+      color: var(--muted);
+      letter-spacing: 0.02em;
+    }
+    .link-count {
+      font-size: 0.72rem;
+      font-weight: 500;
+      color: var(--accent);
+      letter-spacing: 0.02em;
+      white-space: nowrap;
+      padding: 4px 12px;
+      border-radius: 20px;
+      background: rgba(232, 93, 42, 0.09);
+      transition: opacity 0.2s;
+    }
+    .link-count.empty { display: none; }
+
+    .cards-head {
+      display: none;
+      margin-top: 8px;
+      margin-bottom: 2px;
+      font-size: 0.72rem;
+      color: var(--muted);
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+    .cards-head.show { display: block; }
+
+    /* Auto-download toggle + concurrency */
+    .options-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-top: 14px;
+    }
+    .concurrency { display: inline-flex; align-items: center; gap: 8px; }
+    .concurrency-label {
+      font-size: 0.7rem;
+      color: var(--muted);
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+    }
+    .concurrency select {
+      font-family: 'DM Mono', monospace;
+      font-size: 0.78rem;
+      color: var(--fg);
+      background: var(--card);
+      border: 1.5px solid var(--card-border);
+      border-radius: 8px;
+      padding: 6px 10px;
+      cursor: pointer;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .concurrency select:focus { border-color: var(--accent); }
+
+    /* Mode selector */
+    .mode-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+    .mode-label {
+      font-size: 0.7rem;
+      color: var(--muted);
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+    .mode-row select {
+      font-family: 'DM Mono', monospace;
+      font-size: 0.78rem;
+      color: var(--fg);
+      background: var(--card);
+      border: 1.5px solid var(--card-border);
+      border-radius: 8px;
+      padding: 6px 10px;
+      cursor: pointer;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .mode-row select:focus { border-color: var(--accent); }
+    .switch {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      cursor: pointer;
+      user-select: none;
+    }
+    .switch input { position: absolute; opacity: 0; pointer-events: none; }
+    .switch-track {
+      width: 38px;
+      height: 22px;
+      border-radius: 22px;
+      background: var(--card-border);
+      border: 1.5px solid var(--card-border);
+      position: relative;
+      transition: background 0.2s, border-color 0.2s;
+      flex-shrink: 0;
+    }
+    .switch-thumb {
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: var(--muted);
+      transition: transform 0.2s, background 0.2s;
+    }
+    .switch input:checked + .switch-track {
+      background: var(--accent);
+      border-color: var(--accent);
+    }
+    .switch input:checked + .switch-track .switch-thumb {
+      transform: translateX(16px);
+      background: #fff;
+    }
+    .switch input:focus-visible + .switch-track {
+      box-shadow: 0 0 0 3px rgba(232, 93, 42, 0.15);
+    }
+    .switch-label {
+      font-size: 0.74rem;
+      color: var(--fg);
+      letter-spacing: 0.02em;
+    }
+
+    .controls {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 6px;
+      align-items: center;
+    }
+    .pill-group {
+      display: flex;
+      border: 1.5px solid var(--card-border);
+      border-radius: 10px;
+      overflow: hidden;
+      background: var(--card);
+    }
+    .pill {
+      padding: 9px 18px;
+      font-family: 'DM Mono', monospace;
+      font-size: 0.76rem;
+      border: none;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+      transition: all 0.2s;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+    }
+    .pill.active { background: var(--fg); color: var(--bg); }
+    .pill:not(.active):hover { color: var(--fg); }
+
+    .fetch-btn {
+      flex: 1;
+      padding: 10px 20px;
+      border: none;
+      border-radius: 10px;
+      background: var(--accent);
+      color: #fff;
+      font-family: 'DM Mono', monospace;
+      font-size: 0.82rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.2s, transform 0.1s;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .fetch-btn:hover { background: var(--accent-hover); }
+    .fetch-btn:active { transform: scale(0.98); }
+    .fetch-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+
+    /* Cards */
+    .cards { margin-top: 24px; }
+
+    .card {
+      display: flex;
+      gap: 18px;
+      border: 1.5px solid var(--card-border);
+      border-radius: var(--radius);
+      background: var(--card);
+      padding: 18px;
+      margin-bottom: 14px;
+      animation: slideUp 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    @keyframes slideUp {
+      from { opacity: 0; transform: translateY(12px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .card-thumb {
+      width: 152px;
+      min-width: 152px;
+      height: 94px;
+      border-radius: 8px;
+      overflow: hidden;
+      background: var(--card-border);
+      flex-shrink: 0;
+      position: relative;
+    }
+    .card-thumb img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+    /* No-thumbnail icon */
+    .card-thumb .no-thumb {
+      width: 100%;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--muted);
+    }
+    .card-thumb .no-thumb svg {
+      width: 28px;
+      height: 28px;
+      opacity: 0.5;
+    }
+
+    /* Shimmer skeleton for loading state */
+    .card-thumb.loading {
+      background: var(--shimmer);
+      background-size: 200% 100%;
+      animation: shimmer 1.5s infinite;
+    }
+    .skeleton-line {
+      height: 12px;
+      border-radius: 4px;
+      background: var(--shimmer);
+      background-size: 200% 100%;
+      animation: shimmer 1.5s infinite;
+      margin-bottom: 6px;
+    }
+    .skeleton-line.short { width: 40%; height: 10px; }
+    .skeleton-line.medium { width: 75%; }
+    @keyframes shimmer {
+      0% { background-position: 200% 0; }
+      100% { background-position: -200% 0; }
+    }
+
+    .card-body {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    }
+    .card-title {
+      font-family: 'Instrument Serif', serif;
+      font-size: 1rem;
+      line-height: 1.3;
+      color: var(--fg);
+      margin-bottom: 2px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .card-meta {
+      font-size: 0.68rem;
+      color: var(--muted);
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+      margin-bottom: 8px;
+    }
+
+    .card-actions {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .card-dl-btn {
+      padding: 6px 14px;
+      border: none;
+      border-radius: 7px;
+      background: var(--fg);
+      color: var(--bg);
+      font-family: 'DM Mono', monospace;
+      font-size: 0.7rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+    }
+    .card-dl-btn:hover { background: #2d2d2a; }
+    .card-dl-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .card-dl-btn.done { background: var(--success); color: #fff; }
+    .card-dl-btn.error { background: var(--error); color: #fff; }
+
+    /* Stop / delete controls */
+    .card-x-btn {
+      padding: 6px 12px;
+      border: 1.5px solid var(--card-border);
+      border-radius: 7px;
+      background: transparent;
+      color: var(--muted);
+      font-family: 'DM Mono', monospace;
+      font-size: 0.68rem;
+      cursor: pointer;
+      transition: all 0.2s;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+    }
+    .card-x-btn:hover { border-color: var(--error); color: var(--error); }
+
+    .card-status {
+      font-size: 0.68rem;
+      color: var(--muted);
+    }
+    .card-saved-name {
+      font-size: 0.66rem;
+      color: var(--muted);
+      word-break: break-all;
+      flex-basis: 100%;
+    }
+    .card-status.downloading { color: var(--accent); }
+    .card-status.done { color: var(--success); }
+    .card-status.error { color: var(--error); }
+
+    /* Progress bar (per-download tracker) */
+    .progress-wrap { width: 100%; margin-top: 4px; }
+    .progress-track {
+      height: 6px;
+      border-radius: 4px;
+      background: var(--card-border);
+      overflow: hidden;
+    }
+    .progress-fill {
+      height: 100%;
+      width: 0%;
+      background: var(--accent);
+      border-radius: 4px;
+      transition: width 0.3s ease;
+    }
+    .progress-fill.done { background: var(--success); }
+    .progress-fill.queued { background: var(--muted); }
+    .progress-fill.processing {
+      width: 100%;
+      background: linear-gradient(90deg, var(--accent) 25%, var(--accent-hover) 50%, var(--accent) 75%);
+      background-size: 200% 100%;
+      animation: shimmer 1.2s infinite;
+    }
+    .progress-info {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 0.62rem;
+      color: var(--muted);
+      margin-top: 4px;
+      letter-spacing: 0.02em;
+      white-space: nowrap;
+      overflow: hidden;
+    }
+    .progress-info .pi-left { color: var(--fg); }
+    .progress-info span { overflow: hidden; text-overflow: ellipsis; }
+
+    .q-chip {
+      padding: 4px 10px;
+      border: 1.5px solid var(--card-border);
+      border-radius: 6px;
+      background: transparent;
+      color: var(--muted);
+      font-family: 'DM Mono', monospace;
+      font-size: 0.65rem;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .q-chip.active {
+      border-color: var(--fg);
+      color: var(--fg);
+      background: rgba(26,26,24,0.04);
+    }
+    .q-chip:hover:not(.active) { border-color: var(--muted); }
+
+    /* Error card */
+    .card.card-error {
+      border-color: rgba(196, 61, 61, 0.2);
+      background: rgba(196, 61, 61, 0.03);
+    }
+    .card-error-icon {
+      width: 100%;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(196, 61, 61, 0.08);
+      color: var(--error);
+    }
+    .card-error-icon svg {
+      width: 24px;
+      height: 24px;
+    }
+    .card-error-msg {
+      font-size: 0.72rem;
+      color: var(--error);
+      margin-top: 2px;
+      line-height: 1.4;
+    }
+    .card-dl-error {
+      font-size: 0.74rem;
+      color: var(--error);
+      margin-top: 7px;
+      line-height: 1.4;
+    }
+    .card-dl-error-detail {
+      font-size: 0.65rem;
+      color: var(--muted);
+      word-break: break-all;
+      margin-top: 3px;
+      max-height: 3.2em;
+      overflow: hidden;
+    }
+    .already-badge {
+      display: inline-block;
+      margin-right: 8px;
+      padding: 1px 7px;
+      border-radius: 999px;
+      background: rgba(47, 158, 68, 0.12);
+      color: #2f9e44;
+      font-size: 0.68rem;
+      vertical-align: middle;
+    }
+    .card-error-url {
+      font-size: 0.65rem;
+      color: var(--muted);
+      word-break: break-all;
+      margin-top: 4px;
+    }
+
+    /* Download all bar */
+    .dl-all-bar {
+      display: flex;
+      gap: 10px;
+      margin-top: 16px;
+    }
+    .dl-all-bar-wrap { margin-top: 16px; }
+    .dl-all-row { display: flex; gap: 10px; }
+    /* Compact floating progress widget, pinned bottom-right */
+    .overall-progress {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      width: 300px;
+      max-width: calc(100vw - 32px);
+      padding: 14px 16px;
+      border: 1.5px solid var(--card-border);
+      border-radius: 12px;
+      background: var(--card);
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.14);
+      z-index: 60;
+    }
+    .overall-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .overall-head span {
+      font-size: 0.72rem;
+      font-weight: 500;
+      color: var(--fg);
+      letter-spacing: 0.02em;
+    }
+    .overall-close {
+      border: none;
+      background: transparent;
+      color: var(--muted);
+      font-size: 1.2rem;
+      line-height: 1;
+      cursor: pointer;
+      padding: 0 2px;
+    }
+    .overall-close:hover { color: var(--fg); }
+    .overall-sub {
+      font-size: 0.62rem;
+      color: var(--muted);
+      margin-top: 6px;
+      min-height: 0.8em;
+    }
+    @media (max-width: 500px) {
+      .overall-progress { left: 16px; right: 16px; bottom: 16px; width: auto; }
+    }
+    .dl-all-btn {
+      flex: 1;
+      padding: 12px;
+      border: none;
+      border-radius: 10px;
+      background: var(--fg);
+      color: var(--bg);
+      font-family: 'DM Mono', monospace;
+      font-size: 0.82rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .dl-all-btn:hover { background: #2d2d2a; }
+    .dl-all-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    .spin {
+      display: inline-block;
+      width: 10px; height: 10px;
+      border: 2px solid currentColor;
+      border-right-color: transparent;
+      border-radius: 50%;
+      animation: spin 0.6s linear infinite;
+      vertical-align: middle;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .footer {
+      margin-top: 48px;
+      text-align: center;
+      font-size: 0.68rem;
+      color: var(--muted);
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      line-height: 1.8;
+    }
+
+    /* Downloads library sidebar */
+    .library {
+      position: sticky;
+      top: 32px;
+      align-self: start;
+      display: flex;
+      flex-direction: column;
+      border: 1.5px solid var(--card-border);
+      border-radius: var(--radius);
+      background: var(--card);
+      padding: 16px 14px;
+      max-height: calc(100vh - 64px);
+      overflow: hidden;
+    }
+    .library-head { display: flex; align-items: center; gap: 10px; }
+    .lib-btns {
+      margin-left: auto;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .library-title {
+      font-family: 'Instrument Serif', serif;
+      font-size: 1.35rem;
+      color: var(--fg);
+    }
+    .library-count {
+      font-size: 0.7rem;
+      color: var(--muted);
+      background: var(--bg);
+      border: 1px solid var(--card-border);
+      border-radius: 999px;
+      padding: 1px 8px;
+    }
+    .library-refresh {
+      border: 1px solid var(--card-border);
+      background: var(--card);
+      color: var(--muted);
+      border-radius: 9px;
+      width: 30px; height: 30px;
+      cursor: pointer;
+      font-size: 0.95rem;
+      line-height: 1;
+      transition: color 0.15s, border-color 0.15s;
+    }
+    .library-refresh:hover { color: var(--accent); border-color: var(--accent); }
+    .library-refresh.active { color: var(--accent); border-color: var(--accent); }
+    .library-refresh svg {
+      width: 15px;
+      height: 15px;
+      display: block;
+      margin: 0 auto;
+    }
+    .group-btn { font-size: 1.05rem; }
+    .group-btn svg { width: 16px; height: 16px; }
+    .group-btn:hover { color: #2563eb; border-color: #2563eb; }
+    .library-tools { margin-top: 12px; }
+    .lib-search {
+      width: 100%;
+      font-family: 'DM Mono', monospace;
+      font-size: 0.75rem;
+      color: var(--fg);
+      background: var(--bg);
+      border: 1.5px solid var(--card-border);
+      border-radius: 8px;
+      padding: 7px 10px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .lib-search:focus { border-color: var(--accent); }
+    .lib-filters {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+      margin-top: 8px;
+    }
+    .lib-filters select {
+      width: 100%;
+      font-family: 'DM Mono', monospace;
+      font-size: 0.68rem;
+      color: var(--fg);
+      background: var(--card);
+      border: 1.5px solid var(--card-border);
+      border-radius: 8px;
+      padding: 5px 6px;
+      cursor: pointer;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .lib-filters select:focus { border-color: var(--accent); }
+    .dlgroup { margin-left: 2px; }
+    .library-list {
+      margin-top: 12px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding-right: 2px;
+      min-height: 40px;
+    }
+    .library-empty {
+      color: var(--muted);
+      font-size: 0.72rem;
+      text-align: center;
+      padding: 18px 0;
+    }
+    .lib-item {
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      border: 1px solid var(--card-border);
+      border-radius: 12px;
+      padding: 11px 12px;
+      background: var(--bg);
+    }
+    .lib-item-main { min-width: 0; flex: 1; }
+    .lib-item-name {
+      display: block;
+      font-size: 0.78rem;
+      color: var(--fg);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .lib-item-meta {
+      display: block;
+      font-size: 0.66rem;
+      color: var(--muted);
+      margin-top: 3px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .lib-item-thumb {
+      width: 98px;
+      min-width: 98px;
+      height: 58px;
+      border-radius: 8px;
+      overflow: hidden;
+      background: var(--card-border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+    .lib-item-thumb img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+    .lib-thumb-ic {
+      color: var(--muted);
+      font-size: 0.8rem;
+    }
+    .lib-item-site {
+      display: inline-block;
+      font-size: 0.6rem;
+      color: var(--accent);
+      background: rgba(232, 93, 42, 0.08);
+      border: 1px solid rgba(232, 93, 42, 0.25);
+      border-radius: 999px;
+      padding: 0 6px;
+      margin-top: 3px;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      vertical-align: middle;
+    }
+    .lib-item-grp {
+      display: inline-block;
+      font-size: 0.6rem;
+      color: #2563eb;
+      background: rgba(37, 99, 235, 0.08);
+      border: 1px solid rgba(37, 99, 235, 0.25);
+      border-radius: 999px;
+      padding: 0 6px;
+      margin-top: 3px;
+      margin-left: 4px;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      vertical-align: middle;
+    }
+    .lib-item-actions {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      flex-shrink: 0;
+    }
+    .lib-dl, .lib-del, .lib-link {
+      border: 1px solid var(--card-border);
+      background: var(--card);
+      border-radius: 8px;
+      width: 30px; height: 30px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1rem;
+      text-decoration: none;
+      cursor: pointer;
+      transition: color 0.15s, border-color 0.15s, background 0.15s;
+    }
+    .lib-dl { color: var(--accent); }
+    .lib-dl:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .lib-del { color: var(--muted); }
+    .lib-del:hover { color: var(--error); border-color: var(--error); }
+    .lib-link { color: var(--muted); }
+    .lib-link:hover { color: #2563eb; border-color: #2563eb; }
+
+    /* Group manager */
+    .group-manager {
+      margin-top: 12px;
+      border: 1.5px solid var(--card-border);
+      border-radius: 10px;
+      padding: 10px;
+      background: var(--bg);
+    }
+    .gm-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-family: 'Instrument Serif', serif;
+      font-size: 1rem;
+      color: var(--fg);
+    }
+    .gm-close {
+      border: none;
+      background: transparent;
+      color: var(--muted);
+      font-size: 1rem;
+      cursor: pointer;
+      line-height: 1;
+    }
+    .gm-close:hover { color: var(--error); }
+    .gm-list {
+      list-style: none;
+      margin-top: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      max-height: 180px;
+      overflow-y: auto;
+    }
+    .gm-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      background: var(--card);
+      padding: 5px 8px;
+    }
+    .gm-item .gm-name {
+      flex: 1;
+      font-size: 0.72rem;
+      color: var(--fg);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .gm-item .gm-count { font-size: 0.62rem; color: var(--muted); }
+    .gm-item button {
+      border: 1px solid var(--card-border);
+      background: var(--card);
+      border-radius: 6px;
+      width: 22px; height: 22px;
+      font-size: 0.85rem;
+      cursor: pointer;
+      color: var(--muted);
+      line-height: 1;
+      transition: color 0.15s, border-color 0.15s;
+    }
+    .gm-item button:hover { color: var(--accent); border-color: var(--accent); }
+    .gm-item button.gm-del:hover { color: var(--error); border-color: var(--error); }
+    .gm-add { display: flex; gap: 6px; margin-top: 8px; }
+    .gm-add input {
+      flex: 1;
+      font-family: 'DM Mono', monospace;
+      font-size: 0.72rem;
+      color: var(--fg);
+      background: var(--card);
+      border: 1.5px solid var(--card-border);
+      border-radius: 8px;
+      padding: 6px 8px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .gm-add input:focus { border-color: var(--accent); }
+    .gm-add button {
+      border: 1px solid var(--accent);
+      background: var(--accent);
+      color: #fff;
+      border-radius: 8px;
+      width: 30px;
+      cursor: pointer;
+      font-size: 1rem;
+    }
+
+    /* MEGA multi-account helper */
+    .mega-open-btn {
+      color: #d9272e;
+      font-weight: 700;
+      font-family: 'DM Mono', monospace;
+      font-size: 0.72rem;
+    }
+    .mega-open-btn:hover { color: #d9272e; border-color: #d9272e; }
+    .lib-select {
+      width: 17px;
+      min-width: 17px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .lib-select input { accent-color: #d9272e; cursor: pointer; }
+    .mega-selection {
+      margin-top: 10px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 9px;
+      border: 1px solid rgba(217, 39, 46, 0.28);
+      border-radius: 9px;
+      background: rgba(217, 39, 46, 0.055);
+      font-size: 0.68rem;
+      color: var(--fg);
+    }
+    .mega-selection[hidden] { display: none; }
+    .mega-selection span { flex: 1; }
+    .mega-selection button {
+      border: 1px solid var(--card-border);
+      border-radius: 7px;
+      background: var(--card);
+      color: var(--muted);
+      padding: 5px 7px;
+      cursor: pointer;
+      font-family: 'DM Mono', monospace;
+      font-size: 0.64rem;
+    }
+    .mega-selection .mega-send { color: #fff; border-color: #d9272e; background: #d9272e; }
+    .mega-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 1000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 22px;
+      background: rgba(25, 21, 18, 0.58);
+      backdrop-filter: blur(5px);
+    }
+    .mega-overlay[hidden] { display: none; }
+    .mega-dialog {
+      --muted: #6c685f;
+      --error: #a32d2d;
+      width: min(980px, 100%);
+      max-height: min(820px, calc(100vh - 44px));
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      border: 1px solid var(--card-border);
+      border-radius: 18px;
+      background: var(--card);
+      box-shadow: 0 28px 80px rgba(0, 0, 0, 0.24);
+    }
+    .mega-head {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 16px 18px;
+      border-bottom: 1px solid var(--card-border);
+    }
+    .mega-mark {
+      width: 32px; height: 32px;
+      border-radius: 9px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: #fff;
+      background: #d9272e;
+      font-family: 'DM Mono', monospace;
+      font-weight: 700;
+    }
+    .mega-head-main { min-width: 0; flex: 1; }
+    .mega-head h2 { font-family: 'Instrument Serif', serif; font-size: 1.45rem; font-weight: 400; }
+    .mega-head p { color: var(--muted); font-size: 0.64rem; margin-top: 1px; }
+    .mega-close {
+      border: 1px solid var(--card-border);
+      background: var(--card);
+      color: var(--muted);
+      border-radius: 9px;
+      width: 31px; height: 31px;
+      cursor: pointer;
+      font-size: 1.1rem;
+    }
+    .mega-body {
+      min-height: 0;
+      overflow-y: auto;
+      display: grid;
+      grid-template-columns: minmax(280px, 0.9fr) minmax(340px, 1.1fr);
+      gap: 18px;
+      padding: 18px;
+    }
+    .mega-panel {
+      min-width: 0;
+      border: 1px solid var(--card-border);
+      border-radius: 13px;
+      background: var(--bg);
+      padding: 13px;
+    }
+    .mega-panel-head { display: flex; align-items: center; gap: 8px; margin-bottom: 11px; }
+    .mega-panel-head h3 { flex: 1; font-family: 'Instrument Serif', serif; font-size: 1.08rem; font-weight: 400; }
+    .mega-small-btn, .mega-primary, .mega-danger {
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      background: var(--card);
+      color: var(--muted);
+      padding: 6px 9px;
+      cursor: pointer;
+      font-family: 'DM Mono', monospace;
+      font-size: 0.65rem;
+    }
+    .mega-primary { color: #fff; background: #d9272e; border-color: #d9272e; }
+    .mega-primary:disabled { opacity: 0.5; cursor: wait; }
+    .mega-danger:hover { color: var(--error); border-color: var(--error); }
+    .mega-status {
+      margin-bottom: 11px;
+      border-radius: 8px;
+      padding: 8px 10px;
+      background: rgba(37, 99, 235, 0.08);
+      color: #2563eb;
+      font-size: 0.66rem;
+      line-height: 1.5;
+    }
+    .mega-status.error { color: var(--error); background: rgba(196, 52, 44, 0.08); }
+    .mega-status[hidden] { display: none; }
+    .mega-account-list, .mega-job-list { display: flex; flex-direction: column; gap: 8px; }
+    .mega-account-list { max-height: 260px; overflow-y: auto; }
+    .mega-account {
+      border: 1px solid var(--card-border);
+      border-radius: 10px;
+      background: var(--card);
+      padding: 10px;
+    }
+    .mega-account-top { display: flex; align-items: center; gap: 7px; }
+    .mega-account-name { flex: 1; min-width: 0; }
+    .mega-account-name strong, .mega-account-name span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .mega-account-name strong { color: var(--fg); font-size: 0.72rem; font-weight: 500; }
+    .mega-account-name span { color: var(--muted); font-size: 0.6rem; margin-top: 2px; }
+    .mega-toggle { font-size: 0.59rem; color: var(--muted); display: flex; gap: 4px; align-items: center; }
+    .mega-toggle input { accent-color: #d9272e; }
+    .mega-account-del { border: none; background: none; color: var(--muted); cursor: pointer; font-size: 1rem; }
+    .mega-account-del:hover { color: var(--error); }
+    .mega-quota { margin-top: 8px; }
+    .mega-quota-meta { display: flex; justify-content: space-between; color: var(--muted); font-size: 0.59rem; margin-bottom: 4px; }
+    .mega-quota-track, .mega-job-track { height: 5px; border-radius: 99px; overflow: hidden; background: var(--card-border); }
+    .mega-quota-fill { height: 100%; background: #d9272e; border-radius: inherit; }
+    .mega-form { display: grid; gap: 7px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--card-border); }
+    .mega-form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+    .mega-form input, .mega-form select {
+      min-width: 0;
+      width: 100%;
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      background: var(--card);
+      color: var(--fg);
+      outline: none;
+      padding: 8px 9px;
+      font-family: 'DM Mono', monospace;
+      font-size: 0.68rem;
+    }
+    .mega-form input:focus, .mega-form select:focus { border-color: #d9272e; }
+    .mega-form label { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 0.62rem; }
+    .mega-form label input[type="checkbox"] { width: auto; accent-color: #d9272e; }
+    .mega-selected-summary { color: var(--muted); font-size: 0.66rem; margin-bottom: 9px; line-height: 1.5; }
+    .mega-divider { height: 1px; background: var(--card-border); margin: 14px 0; }
+    .mega-job-list { max-height: 305px; overflow-y: auto; }
+    .mega-job {
+      border: 1px solid var(--card-border);
+      border-radius: 10px;
+      background: var(--card);
+      padding: 9px 10px;
+    }
+    .mega-job-top { display: flex; align-items: center; gap: 7px; }
+    .mega-job-name { min-width: 0; flex: 1; color: var(--fg); font-size: 0.67rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .mega-job-state { font-size: 0.57rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+    .mega-job-state.uploading { color: #2563eb; }
+    .mega-job-state.done { color: var(--success); }
+    .mega-job-state.error { color: var(--error); }
+    .mega-job-fill { height: 100%; background: #2563eb; border-radius: inherit; transition: width 0.2s; }
+    .mega-job.done .mega-job-fill { background: var(--success); }
+    .mega-job-meta, .mega-job-error { margin-top: 5px; color: var(--muted); font-size: 0.58rem; line-height: 1.4; overflow-wrap: anywhere; }
+    .mega-job-error { color: var(--error); }
+    .mega-empty { color: var(--muted); text-align: center; font-size: 0.66rem; padding: 14px 5px; }
+
+    @media (max-width: 760px) {
+      .mega-overlay { padding: 8px; align-items: stretch; }
+      .mega-dialog { max-height: calc(100vh - 16px); margin: auto 0; }
+      .mega-body { grid-template-columns: 1fr; }
+    }
+
+    /* Mobile */
+    @media (max-width: 500px) {
+      .brand h1 { font-size: 3rem; }
+      .page { grid-template-columns: 1fr; gap: 28px; }
+      .library { position: static; max-height: none; }
+      .page { padding: 40px 16px 60px; }
+      .card { flex-direction: column; gap: 10px; }
+      .card-thumb {
+        width: 100%;
+        min-width: unset;
+        height: 160px;
+      }
+      .card-title { white-space: normal; }
+      .controls { flex-wrap: wrap; }
+      .fetch-btn { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <main class="main-col">
+    <div class="brand">
+      <h1>Re<em>Clip</em></h1>
+      <p>Free media downloader</p>
+    </div>
+
+    <div class="mode-row">
+      <label class="mode-label" for="modeSelect">Mode</label>
+      <select id="modeSelect" onchange="onModeChange(this.value)">
+        <option value="video">Download videos</option>
+        <option value="scrape">Scrape video links from a page</option>
+      </select>
+    </div>
+
+    <textarea id="urls" placeholder="Paste one or more URLs — one per line…" rows="3"></textarea>
+    <div class="input-meta">
+      <span class="hint">Separate multiple links with spaces, commas, or new lines.</span>
+      <span class="link-count empty" id="linkCount"></span>
+    </div>
+
+    <div class="controls">
+      <div class="pill-group">
+        <button class="pill active" data-format="video" onclick="setFormat(this)">MP4</button>
+        <button class="pill" data-format="audio" onclick="setFormat(this)">MP3</button>
+      </div>
+      <button class="fetch-btn" id="goBtn" onclick="go()">Fetch</button>
+    </div>
+
+    <div class="options-row">
+      <label class="switch">
+        <input type="checkbox" id="autoDl" onchange="toggleAuto(this)">
+        <span class="switch-track"><span class="switch-thumb"></span></span>
+        <span class="switch-label">Auto-download detected videos</span>
+      </label>
+      <div class="concurrency dlgroup">
+        <span class="concurrency-label">Save to group</span>
+        <select id="dlGroup" onchange="onDownloadGroupChange(this.value)">
+          <option value="">No group</option>
+        </select>
+      </div>
+      <div class="concurrency">
+        <span class="concurrency-label">Downloads at once</span>
+        <select id="concurrency" onchange="setConcurrency(this.value)">
+          <option>1</option><option>2</option><option>3</option><option>4</option>
+          <option>5</option><option>6</option><option>7</option><option>8</option>
+        </select>
+      </div>
+    </div>
+
+    <div id="cardsHead" class="cards-head"></div>
+    <div id="cards" class="cards"></div>
+
+    <div class="footer">
+      YouTube &middot; TikTok &middot; Instagram &middot; Twitter/X &middot; Reddit &middot; Facebook<br>
+      Vimeo &middot; Twitch &middot; Dailymotion &middot; SoundCloud &middot; Loom &middot; Streamable<br>
+      Pinterest &middot; Tumblr &middot; Threads &middot; LinkedIn &middot; 1000+ more
+    </div>
+    </main>
+
+    <aside class="library" id="library">
+      <div class="library-head">
+        <span class="library-title">Downloads</span>
+        <span class="library-count" id="libraryCount">0</span>
+        <div class="lib-btns">
+          <button class="library-refresh" id="libSearchToggle" title="Search / filters" onclick="toggleSearchTools()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="16.5" y1="16.5" x2="21" y2="21"/></svg>
+          </button>
+          <button class="library-refresh group-btn" title="Manage groups" onclick="toggleGroups()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 2 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5"/><path d="m3 17 9 5 9-5"/></svg>
+          </button>
+          <button class="library-refresh mega-open-btn" title="MEGA accounts and uploads" onclick="openMega()">M</button>
+          <button class="library-refresh" title="Refresh list" onclick="refreshLibrary()">↻</button>
+        </div>
+      </div>
+      <div class="group-manager" id="groupManager" hidden>
+        <div class="gm-head"><span>Groups</span><button class="gm-close" onclick="toggleGroups(false)">×</button></div>
+        <ul class="gm-list" id="gmList"></ul>
+        <div class="gm-add">
+          <input id="gmName" placeholder="New group name…" autocomplete="off" onkeydown="if(event.key==='Enter')addGroup()">
+          <button onclick="addGroup()">+</button>
+        </div>
+      </div>
+      <div class="library-tools">
+        <input id="libSearch" class="lib-search" type="search" placeholder="Search downloads…" autocomplete="off" oninput="renderLibrary()">
+        <div class="lib-filters">
+          <select id="libType" onchange="renderLibrary()">
+            <option value="">All types</option>
+            <option value="video">Video</option>
+            <option value="audio">Audio</option>
+          </select>
+          <select id="libDate" onchange="renderLibrary()">
+            <option value="">Any time</option>
+            <option value="today">Today</option>
+            <option value="7">Last 7 days</option>
+            <option value="30">Last 30 days</option>
+          </select>
+          <select id="libSort" onchange="renderLibrary()">
+            <option value="new">Newest</option>
+            <option value="old">Oldest</option>
+            <option value="az">A → Z</option>
+            <option value="big">Largest</option>
+          </select>
+          <select id="libGroup" onchange="renderLibrary()">
+            <option value="all">All groups</option>
+            <option value="ungrouped">Ungrouped</option>
+          </select>
+        </div>
+      </div>
+      <div class="mega-selection" id="megaSelection" hidden>
+        <span id="megaSelectionCount">0 files selected</span>
+        <button onclick="clearMegaSelection()">Clear</button>
+        <button class="mega-send" onclick="openMega()">Send to MEGA</button>
+      </div>
+      <div class="library-list" id="libraryList">
+        <div class="library-empty">No downloads yet</div>
+      </div>
+    </aside>
+  </div>
+
+  <div class="mega-overlay" id="megaOverlay" hidden onclick="if(event.target===this)closeMega()">
+    <div class="mega-dialog" role="dialog" aria-modal="true" aria-labelledby="megaTitle" onclick="event.stopPropagation()">
+      <div class="mega-head">
+        <span class="mega-mark">M</span>
+        <div class="mega-head-main">
+          <h2 id="megaTitle">MEGA Helper</h2>
+          <p>Multiple accounts · storage quota aware · retrying transfer queue</p>
+        </div>
+        <button class="mega-close" onclick="closeMega()" aria-label="Close">×</button>
+      </div>
+      <div class="mega-body">
+        <section class="mega-panel">
+          <div class="mega-panel-head">
+            <h3>Accounts</h3>
+            <button class="mega-small-btn" onclick="loadMegaAccounts(true)">Refresh quotas</button>
+          </div>
+          <div class="mega-status" id="megaAccountStatus" hidden></div>
+          <div class="mega-account-list" id="megaAccountList">
+            <div class="mega-empty">Loading accounts…</div>
+          </div>
+          <form class="mega-form" id="megaAccountForm" onsubmit="addMegaAccount(event)">
+            <div class="mega-form-row">
+              <input id="megaLabel" maxlength="60" placeholder="Account label" autocomplete="off" required>
+              <input id="megaEmail" type="email" maxlength="254" placeholder="MEGA email" autocomplete="username" required>
+            </div>
+            <input id="megaPassword" type="password" placeholder="MEGA password" autocomplete="current-password" required>
+            <button class="mega-primary" id="megaAddBtn" type="submit">Add account & verify quota</button>
+          </form>
+        </section>
+
+        <section class="mega-panel">
+          <div class="mega-panel-head"><h3>Upload selected files</h3></div>
+          <div class="mega-status" id="megaUploadStatus" hidden></div>
+          <div class="mega-selected-summary" id="megaSelectedSummary">No files selected.</div>
+          <form class="mega-form" onsubmit="startMegaUpload(event)" style="margin-top:0;padding-top:0;border-top:0">
+            <div class="mega-form-row">
+              <select id="megaDestinationAccount" aria-label="Destination account">
+                <option value="auto">Automatic — most free space</option>
+              </select>
+              <input id="megaFolder" value="ReClip" maxlength="240" placeholder="Remote folder" autocomplete="off" required>
+            </div>
+            <label><input id="megaPreserveGroups" type="checkbox" checked> Preserve ReClip groups as MEGA folders</label>
+            <button class="mega-primary" id="megaUploadBtn" type="submit">Queue upload</button>
+          </form>
+          <div class="mega-divider"></div>
+          <div class="mega-panel-head">
+            <h3>Transfer queue</h3>
+            <button class="mega-small-btn" onclick="clearMegaFinished()">Clear finished</button>
+          </div>
+          <div class="mega-job-list" id="megaJobList">
+            <div class="mega-empty">No MEGA uploads yet.</div>
+          </div>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let currentFormat = 'video';
+    let currentMode = 'video';
+    let cardData = [];
+    let autoDownload = false;
+    let batchPollIv = null;
+
+    function toggleAuto(cb) {
+      autoDownload = cb.checked;
+      try { localStorage.setItem('reclip_auto', autoDownload ? '1' : '0'); } catch {}
+      updateFetchLabel();
+      // If videos are already fetched and waiting, start them now.
+      if (autoDownload) startAutoDownloads();
+    }
+
+    function updateFetchLabel() {
+      const btn = document.getElementById('goBtn');
+      if (!btn || btn.disabled) return;
+      const scrape = currentMode === 'scrape';
+      btn.textContent = autoDownload
+        ? (scrape ? 'Scrape & Download' : 'Fetch & Download')
+        : (scrape ? 'Scrape' : 'Fetch');
+    }
+
+    function onModeChange(v) {
+      currentMode = (v === 'scrape') ? 'scrape' : 'video';
+      try { localStorage.setItem('reclip_mode', currentMode); } catch {}
+      updateFetchLabel();
+    }
+
+    // Indices of cards that are fetched and waiting to be downloaded.
+    function readyIndexes() {
+      return cardData
+        .map((c, i) => (c && c.status === 'ready' ? i : -1))
+        .filter(i => i >= 0);
+    }
+
+    // NOTE: starting a new fetch never stops pollers or wipes cards anymore —
+    // fetches queue up (each batch owns its own card range), and running
+    // downloads keep their live progress pollers.
+
+    function startAutoDownloads() {
+      const readyIdx = readyIndexes();
+      if (!readyIdx.length) return;
+      if (readyIdx.length > 1) {
+        renderDownloadAll();
+        dlAll();
+      } else {
+        dlCard(readyIdx[0]);
+      }
+    }
+
+    function hideOverall() {
+      const op = document.getElementById('overall-progress');
+      if (op) op.style.display = 'none';
+    }
+
+    async function setConcurrency(n) {
+      try {
+        await fetch('/api/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ max_concurrent: Number(n) }),
+        });
+      } catch {}
+    }
+
+    (function initAuto() {
+      let saved = '0';
+      try { saved = localStorage.getItem('reclip_auto') || '0'; } catch {}
+      autoDownload = saved === '1';
+      const cb = document.getElementById('autoDl');
+      if (cb) cb.checked = autoDownload;
+      updateFetchLabel();
+    })();
+
+    (function initMode() {
+      let m = 'video';
+      try { m = localStorage.getItem('reclip_mode') || 'video'; } catch {}
+      if (m !== 'video' && m !== 'scrape') m = 'video';
+      currentMode = m;
+      const sel = document.getElementById('modeSelect');
+      if (sel) sel.value = m;
+      updateFetchLabel();
+    })();
+
+    (async function initConfig() {
+      try {
+        const cfg = await (await fetch('/api/config')).json();
+        const sel = document.getElementById('concurrency');
+        if (sel && cfg.max_concurrent) sel.value = String(cfg.max_concurrent);
+      } catch {}
+    })();
+
+    // Repopulate the screen after a page refresh: restore the pasted links from
+    // localStorage, then load the persisted download history and any live jobs.
+    async function restoreLibrary() {
+      let lib;
+      try { lib = await (await fetch('/api/library')).json(); } catch { return; }
+
+      // Completed downloads are listed in the Downloads sidebar; here we only
+      // restore live (queued / in-progress / errored / cancelled) jobs so their
+      // state and polling pick up where they left off.
+      const jobs = lib.jobs || [];
+      jobs.forEach((j) => {
+        const idx = cardData.length;
+        cardData[idx] = {
+          url: j.url || '', status: j.status, title: j.title || '',
+          jobId: j.job_id, filename: j.filename, progress: j.progress,
+          speed: j.speed, eta: j.eta, size: j.size, downloaded: j.downloaded,
+          error: j.error, deduped: j.deduped, restored: true,
+          thumbnail: j.thumbnail || '',
+        };
+        renderCard(idx);
+        if (['queued', 'downloading', 'processing', 'resolving'].includes(j.status)) {
+          pollCard(idx);
+        }
+      });
+
+      // Re-attach to any server-side fetch batches that were still running when
+      // the page was reloaded — they keep processing and populate cards here.
+      // Sequential attaches: each batch reserves its own slot range at the end
+      // of the card list, so multiple active batches never share indices.
+      const fbs = lib.fetch_batches || [];
+      for (const bid of fbs) {
+        await attachFetchBatch(bid);
+      }
+      updateCardsHead();
+    }
+
+    // ---------- Downloads sidebar (library) ----------
+    let libraryData = [];
+    let libRefreshTimer = null;
+
+    // ---------- MEGA helper ----------
+    const megaSelected = new Set(); // JSON [group_id, filename] keys
+    let megaAccounts = [];
+    let megaUploads = [];
+    let megaPollTimer = null;
+
+    function megaFileKey(file) {
+      return JSON.stringify([file.group_id || '', file.filename || '']);
+    }
+
+    function selectedMegaFiles() {
+      const byKey = new Map(libraryData.map(file => [megaFileKey(file), file]));
+      return [...megaSelected].map(key => byKey.get(key)).filter(Boolean);
+    }
+
+    function toggleMegaFile(checkbox) {
+      let key = '';
+      try { key = decodeURIComponent(checkbox.dataset.key || ''); } catch { return; }
+      if (checkbox.checked) megaSelected.add(key); else megaSelected.delete(key);
+      renderMegaSelection();
+    }
+
+    function clearMegaSelection() {
+      megaSelected.clear();
+      renderMegaSelection();
+      renderLibrary();
+    }
+
+    function renderMegaSelection() {
+      const files = selectedMegaFiles();
+      const bar = document.getElementById('megaSelection');
+      const count = document.getElementById('megaSelectionCount');
+      if (bar) bar.hidden = files.length === 0;
+      if (count) {
+        const total = files.reduce((sum, file) => sum + Number(file.size || 0), 0);
+        count.textContent = `${files.length} file${files.length === 1 ? '' : 's'} · ${fmtSizeJS(total)}`;
+      }
+      const summary = document.getElementById('megaSelectedSummary');
+      if (summary) {
+        const total = files.reduce((sum, file) => sum + Number(file.size || 0), 0);
+        summary.textContent = files.length
+          ? `${files.length} file selected (${fmtSizeJS(total)}). Automatic mode distributes them according to current free storage.`
+          : 'No files selected. Select files from the Downloads panel first.';
+      }
+      const upload = document.getElementById('megaUploadBtn');
+      if (upload) upload.disabled = files.length === 0;
+    }
+
+    function setMegaStatus(id, message, error = false) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.hidden = !message;
+      el.textContent = message || '';
+      el.classList.toggle('error', !!error);
+    }
+
+    async function megaApi(path, options = {}) {
+      const res = await fetch('/api/mega' + path, options);
+      let data = {};
+      try { data = await res.json(); } catch {}
+      if (!res.ok) throw new Error(data.error || `MEGA request failed (${res.status})`);
+      return data;
+    }
+
+    async function openMega() {
+      const overlay = document.getElementById('megaOverlay');
+      if (!overlay) return;
+      overlay.hidden = false;
+      document.body.style.overflow = 'hidden';
+      try {
+        const saved = localStorage.getItem('reclip_mega_folder');
+        if (saved) document.getElementById('megaFolder').value = saved;
+      } catch {}
+      renderMegaSelection();
+      await Promise.all([loadMegaAccounts(false), loadMegaJobs()]);
+    }
+
+    function closeMega() {
+      const overlay = document.getElementById('megaOverlay');
+      if (overlay) overlay.hidden = true;
+      document.body.style.overflow = '';
+      if (megaPollTimer) clearTimeout(megaPollTimer);
+      megaPollTimer = null;
+    }
+
+    document.addEventListener('keydown', event => {
+      if (event.key === 'Escape' && !document.getElementById('megaOverlay').hidden) closeMega();
+    });
+
+    async function loadMegaAccounts(refresh = false) {
+      setMegaStatus('megaAccountStatus', refresh ? 'Refreshing MEGA storage quotas…' : '');
+      try {
+        const data = await megaApi('/accounts' + (refresh ? '?refresh=1' : ''));
+        megaAccounts = data.accounts || [];
+        renderMegaAccounts();
+        if (!data.available) {
+          setMegaStatus('megaAccountStatus', data.error || 'MEGA helper is unavailable.', true);
+        } else if (refresh) {
+          const failed = megaAccounts.filter(account => account.quota && account.quota.error).length;
+          setMegaStatus(
+            'megaAccountStatus',
+            failed ? `${failed} account quota could not be read.` : 'Storage quotas are up to date.',
+            failed > 0,
+          );
+        }
+        const form = document.getElementById('megaAccountForm');
+        if (form) [...form.elements].forEach(el => { el.disabled = !data.available; });
+      } catch (error) {
+        setMegaStatus('megaAccountStatus', error.message, true);
+      }
+    }
+
+    function renderMegaAccounts() {
+      const list = document.getElementById('megaAccountList');
+      const select = document.getElementById('megaDestinationAccount');
+      if (!list || !select) return;
+      if (!megaAccounts.length) {
+        list.innerHTML = '<div class="mega-empty">No MEGA accounts configured.</div>';
+      } else {
+        list.innerHTML = megaAccounts.map(account => {
+          const quota = account.quota || {};
+          const valid = !quota.error && Number.isFinite(Number(quota.total));
+          const total = Number(quota.total || 0);
+          const used = Number(quota.used || 0);
+          const percent = total ? Math.min(100, Math.max(0, used / total * 100)) : 0;
+          const quotaText = quota.error
+            ? quota.error
+            : valid
+              ? `${fmtSizeJS(used)} used · ${fmtSizeJS(quota.free)} free`
+              : 'Quota has not been checked';
+          return `<div class="mega-account">
+            <div class="mega-account-top">
+              <div class="mega-account-name">
+                <strong>${esc(account.label || 'MEGA')}</strong>
+                <span>${esc(account.email || '')}</span>
+              </div>
+              <label class="mega-toggle" title="Include in automatic allocation">
+                <input type="checkbox" ${account.enabled ? 'checked' : ''} onchange="toggleMegaAccount('${account.id}',this.checked)"> active
+              </label>
+              <button class="mega-account-del" title="Delete account" onclick="deleteMegaAccount('${account.id}')">×</button>
+            </div>
+            <div class="mega-quota">
+              <div class="mega-quota-meta"><span>${esc(quotaText)}</span><span>${valid ? Math.round(percent) + '%' : ''}</span></div>
+              <div class="mega-quota-track"><div class="mega-quota-fill" style="width:${valid ? percent : 0}%"></div></div>
+            </div>
+          </div>`;
+        }).join('');
+      }
+      const current = select.value || 'auto';
+      select.innerHTML = '<option value="auto">Automatic — most free space</option>' +
+        megaAccounts.filter(account => account.enabled && account.quota && !account.quota.error)
+          .map(account => `<option value="${account.id}">${esc(account.label)} — ${fmtSizeJS(account.available_for_upload)} free</option>`)
+          .join('');
+      if ([...select.options].some(option => option.value === current)) select.value = current;
+    }
+
+    async function addMegaAccount(event) {
+      event.preventDefault();
+      const button = document.getElementById('megaAddBtn');
+      const payload = {
+        label: document.getElementById('megaLabel').value.trim(),
+        email: document.getElementById('megaEmail').value.trim(),
+        password: document.getElementById('megaPassword').value,
+      };
+      if (button) { button.disabled = true; button.textContent = 'Verifying account…'; }
+      setMegaStatus('megaAccountStatus', 'Signing in and reading storage quota…');
+      try {
+        await megaApi('/accounts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        document.getElementById('megaAccountForm').reset();
+        setMegaStatus('megaAccountStatus', 'Account added successfully.');
+        await loadMegaAccounts(false);
+      } catch (error) {
+        setMegaStatus('megaAccountStatus', error.message, true);
+      } finally {
+        if (button) { button.disabled = false; button.textContent = 'Add account & verify quota'; }
+      }
+    }
+
+    async function toggleMegaAccount(id, enabled) {
+      try {
+        await megaApi('/accounts/' + encodeURIComponent(id), {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled }),
+        });
+        await loadMegaAccounts(false);
+      } catch (error) {
+        setMegaStatus('megaAccountStatus', error.message, true);
+        await loadMegaAccounts(false);
+      }
+    }
+
+    async function deleteMegaAccount(id) {
+      const account = megaAccounts.find(item => item.id === id);
+      if (!confirm(`Remove MEGA account "${account ? account.label : id}" from ReClip?\nFiles already uploaded to MEGA will not be deleted.`)) return;
+      try {
+        await megaApi('/accounts/' + encodeURIComponent(id), { method: 'DELETE' });
+        setMegaStatus('megaAccountStatus', 'Account removed from ReClip.');
+        await loadMegaAccounts(false);
+      } catch (error) {
+        setMegaStatus('megaAccountStatus', error.message, true);
+      }
+    }
+
+    async function startMegaUpload(event) {
+      event.preventDefault();
+      const files = selectedMegaFiles();
+      if (!files.length) {
+        setMegaStatus('megaUploadStatus', 'Select at least one file from Downloads.', true);
+        return;
+      }
+      const folder = document.getElementById('megaFolder').value.trim();
+      const button = document.getElementById('megaUploadBtn');
+      if (button) { button.disabled = true; button.textContent = 'Checking quotas…'; }
+      setMegaStatus('megaUploadStatus', 'Reading live quotas and planning account allocation…');
+      try {
+        const result = await megaApi('/uploads', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            files: files.map(file => ({ filename: file.filename, group_id: file.group_id || '' })),
+            account_id: document.getElementById('megaDestinationAccount').value || 'auto',
+            folder,
+            preserve_groups: document.getElementById('megaPreserveGroups').checked,
+          }),
+        });
+        try { localStorage.setItem('reclip_mega_folder', folder); } catch {}
+        megaSelected.clear();
+        renderMegaSelection();
+        renderLibrary();
+        setMegaStatus('megaUploadStatus', `${(result.jobs || []).length} file(s) added to the MEGA queue.`);
+        await loadMegaJobs();
+        await loadMegaAccounts(false);
+      } catch (error) {
+        setMegaStatus('megaUploadStatus', error.message, true);
+      } finally {
+        if (button) { button.disabled = selectedMegaFiles().length === 0; button.textContent = 'Queue upload'; }
+      }
+    }
+
+    async function loadMegaJobs() {
+      if (megaPollTimer) clearTimeout(megaPollTimer);
+      megaPollTimer = null;
+      try {
+        const data = await megaApi('/uploads?limit=100');
+        megaUploads = data.uploads || [];
+        renderMegaJobs();
+      } catch (error) {
+        setMegaStatus('megaUploadStatus', error.message, true);
+        return;
+      }
+      if (megaUploads.some(job => ['queued', 'uploading'].includes(job.status))) {
+        megaPollTimer = setTimeout(loadMegaJobs, 1200);
+      }
+    }
+
+    function renderMegaJobs() {
+      const list = document.getElementById('megaJobList');
+      if (!list) return;
+      if (!megaUploads.length) {
+        list.innerHTML = '<div class="mega-empty">No MEGA uploads yet.</div>';
+        return;
+      }
+      const labels = { queued: 'queued', uploading: 'uploading', done: 'done', error: 'error', cancelled: 'cancelled' };
+      list.innerHTML = megaUploads.map(job => {
+        const active = ['queued', 'uploading'].includes(job.status);
+        const progress = Math.min(100, Math.max(0, Number(job.progress || 0)));
+        const transfer = job.status === 'uploading'
+          ? `${fmtSizeJS(job.uploaded_bytes)} / ${fmtSizeJS(job.size)}${job.speed ? ' · ' + fmtSizeJS(job.speed) + '/s' : ''}${job.eta != null ? ' · ETA ' + fmtEtaMega(job.eta) : ''}`
+          : fmtSizeJS(job.size);
+        return `<div class="mega-job ${job.status || ''}">
+          <div class="mega-job-top">
+            <span class="mega-job-name" title="${escAttr(job.filename || '')}">${esc(job.filename || 'Unknown file')}</span>
+            <span class="mega-job-state ${job.status || ''}">${labels[job.status] || esc(job.status || '')}</span>
+            ${active ? `<button class="mega-account-del" title="Cancel upload" onclick="cancelMegaUpload('${job.id}')">×</button>` : ''}
+          </div>
+          <div class="mega-job-track" style="margin-top:7px"><div class="mega-job-fill" style="width:${progress}%"></div></div>
+          <div class="mega-job-meta">${esc(job.account_label || '')} · ${esc(transfer)}<br>/${esc(job.remote_path || '')}</div>
+          ${job.error ? `<div class="mega-job-error">${esc(job.error)}</div>` : ''}
+        </div>`;
+      }).join('');
+    }
+
+    function fmtEtaMega(seconds) {
+      seconds = Math.max(0, Math.round(Number(seconds) || 0));
+      if (seconds < 60) return `${seconds}s`;
+      const minutes = Math.floor(seconds / 60);
+      return `${minutes}m ${seconds % 60}s`;
+    }
+
+    async function cancelMegaUpload(id) {
+      try {
+        await megaApi('/uploads/' + encodeURIComponent(id) + '/cancel', { method: 'POST' });
+        await loadMegaJobs();
+      } catch (error) {
+        setMegaStatus('megaUploadStatus', error.message, true);
+      }
+    }
+
+    async function clearMegaFinished() {
+      try {
+        await megaApi('/uploads/finished', { method: 'DELETE' });
+        await loadMegaJobs();
+      } catch (error) {
+        setMegaStatus('megaUploadStatus', error.message, true);
+      }
+    }
+
+    function scheduleLibraryRefresh() {
+      if (libRefreshTimer) return;
+      libRefreshTimer = setTimeout(async () => {
+        libRefreshTimer = null;
+        await refreshLibrary();
+        refreshGroups();
+      }, 1200);
+    }
+
+    async function refreshLibrary() {
+      let lib;
+      try { lib = await (await fetch('/api/library')).json(); } catch { return; }
+      libraryData = lib.files || [];
+      const validMegaKeys = new Set(libraryData.map(megaFileKey));
+      [...megaSelected].forEach(key => { if (!validMegaKeys.has(key)) megaSelected.delete(key); });
+      renderLibrary();
+      renderMegaSelection();
+      updateLibraryCount();
+    }
+
+    function updateLibraryCount() {
+      const el = document.getElementById('libraryCount');
+      if (el) el.textContent = libraryData.length;
+    }
+
+    function fmtSizeJS(n) {
+      n = Number(n) || 0;
+      const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+      let i = 0;
+      while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+      return i === 0 ? `${Math.round(n)} B` : `${n.toFixed(1)} ${units[i]}`;
+    }
+
+    function fmtDurJS(sec) {
+      sec = Math.round(Number(sec) || 0);
+      if (sec <= 0) return '';
+      const h = Math.floor(sec / 3600);
+      const m = Math.floor((sec % 3600) / 60);
+      const s = sec % 60;
+      const mm = h ? String(m).padStart(2, '0') : String(m);
+      const ss = String(s).padStart(2, '0');
+      return h ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
+    }
+
+    function fmtDateJS(ts) {
+      const d = new Date(Number(ts) * 1000);
+      if (isNaN(d)) return '';
+      const p = n => String(n).padStart(2, '0');
+      const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      return `${p(d.getDate())} ${months[d.getMonth()]} ${d.getFullYear()} · ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+    }
+
+    function libHost(url) {
+      try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return ''; }
+    }
+
+    function renderLibrary() {
+      const list = document.getElementById('libraryList');
+      if (!list) return;
+      const q = (document.getElementById('libSearch').value || '').toLowerCase().trim();
+      const type = document.getElementById('libType').value;
+      const dateF = document.getElementById('libDate').value;
+      const sort = document.getElementById('libSort').value;
+      const grpF = document.getElementById('libGroup').value;
+      const now = Date.now() / 1000;
+      const types = { video: ['mp4','webm','mkv','mov','avi','flv'], audio: ['mp3','m4a','aac','ogg','wav','flac'] };
+
+      const items = libraryData.filter(f => {
+        if (q) {
+          const hay = `${f.title || ''} ${f.filename || ''} ${f.url || ''}`.toLowerCase();
+          if (!hay.includes(q)) return false;
+        }
+        if (grpF === 'ungrouped') {
+          if (f.group_id) return false;
+        } else if (grpF !== 'all') {
+          if ((f.group_id || '') !== grpF) return false;
+        }
+        if (type) {
+          const ext = (f.filename || '').toLowerCase().split('.').pop();
+          const isAudio = types.audio.includes(ext);
+          if (type === 'audio' && !isAudio) return false;
+          if (type === 'video' && isAudio) return false;
+        }
+        if (dateF) {
+          const t = f.created_at || f.mtime || now;
+          if (dateF === 'today') {
+            const d = new Date();
+            const start = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() / 1000;
+            if (t < start) return false;
+          } else if (now - t > Number(dateF) * 86400) {
+            return false;
+          }
+        }
+        return true;
+      });
+
+      const sorters = {
+        new: (a, b) => (b.created_at || b.mtime || 0) - (a.created_at || a.mtime || 0),
+        old: (a, b) => (a.created_at || a.mtime || 0) - (b.created_at || b.mtime || 0),
+        az: (a, b) => ((a.title || a.filename) || '').localeCompare((b.title || b.filename) || ''),
+        big: (a, b) => (b.size || 0) - (a.size || 0),
+      };
+      items.sort(sorters[sort] || sorters.new);
+
+      if (!items.length) {
+        list.innerHTML = `<div class="library-empty">${libraryData.length ? 'No matches' : 'No downloads yet'}</div>`;
+        return;
+      }
+      list.innerHTML = items.map(f => {
+        const name = f.title || f.filename || 'Unknown';
+        const site = libHost(f.url);
+        const href = `/api/library/download?f=${encodeURIComponent(f.filename || '')}`;
+        const thumbUrl = f.has_thumb ? `/api/library/thumb?f=${encodeURIComponent(f.filename || '')}` : '';
+        const meta = [fmtSizeJS(f.size), fmtDurJS(f.duration), fmtDateJS(f.created_at || f.mtime)].filter(Boolean).join(' · ');
+        const megaKey = megaFileKey(f);
+        const megaDataKey = encodeURIComponent(megaKey);
+        return `
+          <div class="lib-item">
+            <label class="lib-select" title="Select for MEGA upload">
+              <input type="checkbox" data-key="${megaDataKey}" ${megaSelected.has(megaKey) ? 'checked' : ''} onchange="toggleMegaFile(this)">
+            </label>
+            <div class="lib-item-thumb">
+              ${thumbUrl ? `<img src="${thumbUrl}" alt="" loading="lazy">` : `<span class="lib-thumb-ic">▶</span>`}
+            </div>
+            <div class="lib-item-main" title="${esc(name)}">
+              <span class="lib-item-name">${esc(name)}</span>
+              ${site ? `<span class="lib-item-site">${esc(site)}</span>` : ''}
+              ${f.group_name ? `<span class="lib-item-grp">${esc(f.group_name)}</span>` : ''}
+              <span class="lib-item-meta">${esc(meta)}</span>
+            </div>
+            <div class="lib-item-actions">
+              ${f.url ? `<a class="lib-link" href="${esc(f.url)}" target="_blank" rel="noopener noreferrer" title="Open source page">↗</a>` : ''}
+              <a class="lib-dl" href="${href}" download title="Download">↓</a>
+              <button class="lib-del" title="Delete" data-name="${esc(f.filename || '')}" onclick="deleteLibraryFile(this)">×</button>
+            </div>
+          </div>`;
+      }).join('');
+      updateLibraryCount();
+    }
+
+    async function deleteLibraryFile(btn) {
+      const name = btn.dataset.name;
+      if (!name) return;
+      if (!confirm(`Delete \"${name}\" from the server?`)) return;
+      try {
+        await fetch('/api/library/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ f: name }),
+        });
+      } catch {}
+      await refreshLibrary();
+    }
+
+    // ---------- Groups ----------
+    let allGroups = [];       // named groups (id + name), for selects
+    let groupsMeta = [];      // full /api/groups list incl. counts + Ungrouped
+    let selectedGroup = '';
+
+    function onDownloadGroupChange(v) {
+      selectedGroup = v || '';
+      try { localStorage.setItem('reclip_group', selectedGroup); } catch {}
+    }
+
+    async function refreshGroups() {
+      let res;
+      try { res = await fetch('/api/groups'); } catch { return; }
+      let data;
+      try { data = await res.json(); } catch { return; }
+      groupsMeta = data.groups || [];
+      allGroups = groupsMeta.filter(g => g.id !== '');
+
+      // download destination select
+      const dl = document.getElementById('dlGroup');
+      if (dl) {
+        const cur = dl.value;
+        dl.innerHTML = `<option value="">No group</option>` + allGroups
+          .map(g => `<option value="${esc(g.id)}">${esc(g.name)}</option>`).join('');
+        // keep prior selection if still valid, else last stored
+        let want = selectedGroup;
+        try { if (!want) want = localStorage.getItem('reclip_group') || ''; } catch {}
+        if ([...dl.options].some(o => o.value === want)) dl.value = want;
+        selectedGroup = dl.value;
+      }
+
+      // library filter select
+      const lf = document.getElementById('libGroup');
+      if (lf) {
+        const cur = lf.value;
+        lf.innerHTML = `<option value="all">All groups</option><option value="ungrouped">Ungrouped</option>` +
+          allGroups.map(g => `<option value="${esc(g.id)}">${esc(g.name)}</option>`).join('');
+        if ([...lf.options].some(o => o.value === cur)) lf.value = cur;
+      }
+
+      renderGroupsManager();
+    }
+
+    function toggleGroups(force) {
+      const m = document.getElementById('groupManager');
+      if (!m) return;
+      const show = force === undefined ? m.hidden : !!force;
+      m.hidden = !show;
+      if (show) { refreshGroups(); const inp = document.getElementById('gmName'); if (inp) inp.focus(); }
+    }
+
+    function toggleSearchTools(force) {
+      const t = document.querySelector('.library-tools');
+      const b = document.getElementById('libSearchToggle');
+      if (!t) return;
+      const show = force === undefined ? t.hidden : !!force;
+      t.hidden = !show;
+      if (b) b.classList.toggle('active', show);
+    }
+
+    function renderGroupsManager() {
+      const ul = document.getElementById('gmList');
+      if (!ul) return;
+      const named = groupsMeta.filter(g => g.id !== '');
+      if (!named.length) {
+        ul.innerHTML = `<li class="library-empty" style="padding:8px 0">No groups yet</li>`;
+        return;
+      }
+      ul.innerHTML = named.map(g => `
+        <li class="gm-item">
+          <span class="gm-name" title="${esc(g.name)}">${esc(g.name)}</span>
+          <span class="gm-count">${g.count || 0}</span>
+          <button title="Rename" onclick="renameGroup('${esc(g.id)}')">✎</button>
+          <button class="gm-del" title="Delete" onclick="deleteGroup('${esc(g.id)}')">×</button>
+        </li>`).join('');
+    }
+
+    async function addGroup() {
+      const inp = document.getElementById('gmName');
+      const name = (inp && inp.value || '').trim();
+      if (!name) return;
+      try {
+        await fetch('/api/groups', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name }),
+        });
+      } catch {}
+      if (inp) inp.value = '';
+      await refreshGroups();
+    }
+
+    async function renameGroup(gid) {
+      const g = allGroups.find(x => x.id === gid);
+      const name = prompt('Rename group:', g ? g.name : '');
+      if (!name || !name.trim()) return;
+      try {
+        await fetch('/api/groups/' + encodeURIComponent(gid), {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: name.trim() }),
+        });
+      } catch {}
+      await refreshGroups();
+      renderLibrary();
+    }
+
+    async function deleteGroup(gid) {
+      const g = allGroups.find(x => x.id === gid);
+      if (!confirm(`Delete group "${g ? g.name : gid}"?\nIts videos will be moved back to the base folder (not deleted).`)) return;
+      try {
+        await fetch('/api/groups/' + encodeURIComponent(gid), { method: 'DELETE' });
+      } catch {}
+      if (selectedGroup === gid) { selectedGroup = ''; const dl = document.getElementById('dlGroup'); if (dl) dl.value = ''; }
+      await refreshGroups();
+      await refreshLibrary();
+    }
+
+    (async function initSession() {
+      try {
+        const saved = localStorage.getItem('reclip_urls') || '';
+        const ta = document.getElementById('urls');
+        if (ta && saved) { ta.value = saved; }
+      } catch {}
+      if (document.getElementById('urls').value) updateLinkCount();
+      restoreLibrary();
+      refreshLibrary();
+      refreshGroups();
+      toggleSearchTools(true);
+      restoreActiveBatches();
+    })();
+
+    function setFormat(btn) {
+      document.querySelectorAll('.pill').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      currentFormat = btn.dataset.format;
+    }
+
+    function urlTokens(text) {
+      return text.split(/[\s,]+/).map(u => u.trim()).filter(u => u.startsWith('http'));
+    }
+
+    function parseUrls(text) {
+      return [...new Set(urlTokens(text))];
+    }
+
+    function fmtDur(s) {
+      if (!s) return '';
+      const m = Math.floor(s / 60);
+      const sec = Math.floor(s % 60);
+      return `${m}:${sec.toString().padStart(2, '0')}`;
+    }
+
+    function esc(s) {
+      const d = document.createElement('div');
+      d.textContent = s;
+      return d.innerHTML;
+    }
+
+    function escAttr(s) {
+      return esc(s).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    function friendlyError(err) {
+      if (err.includes('Unsupported URL')) return 'This URL is not supported';
+      if (err.includes('Video unavailable')) return 'Video is unavailable or private';
+      if (err.includes('Private video')) return 'This video is private';
+      if (err.includes('HTTP Error 403')) return 'Access denied by the platform';
+      if (err.includes('Rate-limited') || err.includes('rate limit') || err.toLowerCase().includes('too many requests')) return 'Rate-limited by the host — wait a moment and retry';
+      if (err.includes('HTTP Error 404')) return 'Video not found';
+      if (err.includes('copyright')) return 'Video blocked due to copyright';
+      if (err.includes('geo')) return 'Video not available in your region';
+      if (err.includes('timed out') || err.includes('Timed out')) return 'Request timed out — try again';
+      if (err.includes('network') || err.includes('Network')) return 'Network error — check your connection';
+      return err.length > 80 ? err.slice(0, 80) + '...' : err;
+    }
+
+    document.getElementById('urls').addEventListener('keydown', e => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); go(); }
+    });
+
+    function updateLinkCount() {
+      const val = document.getElementById('urls').value;
+      try { localStorage.setItem('reclip_urls', val); } catch {}
+      const tokens = urlTokens(val);
+      const unique = [...new Set(tokens)];
+      const el = document.getElementById('linkCount');
+      if (!unique.length) { el.textContent = ''; el.classList.add('empty'); return; }
+      el.classList.remove('empty');
+      const dupes = tokens.length - unique.length;
+      let txt = `${unique.length} link${unique.length === 1 ? '' : 's'} detected`;
+      if (dupes > 0) txt += ` · ${dupes} duplicate${dupes === 1 ? '' : 's'} skipped`;
+      el.textContent = txt;
+    }
+    document.getElementById('urls').addEventListener('input', updateLinkCount);
+
+    function updateCardsHead() {
+      const alive = cardData.filter(c => c && c.status !== 'deleted');
+      const head = document.getElementById('cardsHead');
+      if (!alive.length) { head.classList.remove('show'); head.textContent = ''; return; }
+      head.classList.add('show');
+      head.textContent = `${alive.length} video${alive.length === 1 ? '' : 's'}`;
+    }
+
+    async function go() {
+      const urls = parseUrls(document.getElementById('urls').value);
+      if (!urls.length) return;
+
+      const btn = document.getElementById('goBtn');
+      btn.disabled = true;
+      btn.textContent = 'Loading...';
+
+      // Fetches run as a queue: every click appends a new batch BELOW whatever
+      // is already on screen. In-flight fetches keep polling, queued/running
+      // downloads keep their cards and live progress — nothing is cancelled,
+      // wiped or lost here anymore.
+
+      // Check if youtube playlist URL
+      for (let i = 0; i < urls.length; i++) {
+        if (urls[i].includes('list=')) {
+          const res = await fetch('/api/playlist', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url: urls[i] }),
+          });
+          const data = await res.json();
+          if (data.urls) {
+            // replace playlist URL with individual video URLs
+            urls.splice(i, 1, ...data.urls);
+          }
+        }
+      }
+
+      // Everything from here onward runs server-side so a page reload can't
+      // stop it: playlist expansion + per-URL info extraction happen in a fetch
+      // batch; we attach a poller that turns each result into a card.
+      let batchId = null;
+      try {
+        const res = await fetch('/api/fetch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ urls, mode: currentMode }),
+        });
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+        batchId = data.batch_id;
+      } catch (err) {
+        const errIdx = cardData.length;
+        cardData[errIdx] = { url: urls[0] || '', status: 'info-error', error: err.message || 'Could not start fetch' };
+        renderCard(errIdx);
+        updateCardsHead();
+        btn.disabled = false;
+        updateFetchLabel();
+        return;
+      }
+
+      btn.disabled = false;
+      updateFetchLabel();
+      attachFetchBatch(batchId);
+    }
+
+    // ---------- Server-side fetch batches ----------
+    // The fetch job lives on the server, so reloading the page never interrupts
+    // it. restoreLibrary re-attaches to any still-running batch via
+    // /api/fetch/list and keeps polling until it finishes.
+    const fetchIntervals = {};
+    const fetchBases = {};
+    const settledFetches = new Set(); // batches whose cards were already rendered
+
+    function clearFetchPoll(batchId) {
+      if (batchId) {
+        if (fetchIntervals[batchId]) { clearInterval(fetchIntervals[batchId]); delete fetchIntervals[batchId]; }
+        delete fetchBases[batchId];
+        settledFetches.add(batchId);
+        return;
+      }
+      Object.values(fetchIntervals).forEach(clearInterval);
+      for (const k in fetchIntervals) delete fetchIntervals[k];
+      for (const k in fetchBases) delete fetchBases[k];
+    }
+
+    async function attachFetchBatch(batchId) {
+      // Single-shot guard, checked and claimed SYNCHRONOUSLY before any await:
+      // whatever calls this (new fetch or reload restore), a batch can only
+      // ever be attached once — no duplicate card ranges can be created.
+      if (fetchIntervals[batchId] !== undefined ||
+          fetchBases[batchId] !== undefined ||
+          settledFetches.has(batchId)) return;
+      fetchIntervals[batchId] = null; // claimed; buildFetchCards may run
+
+      // The first snapshot reserves this batch's own slot range at the end of
+      // the card list, so concurrent batches (the fetch queue) can never share
+      // or overwrite each other's indices.
+      let st = null;
+      try {
+        const res = await fetch('/api/fetch/' + batchId);
+        if (res.status !== 404) {
+          st = await res.json();
+          if (st.error) st = null;
+        }
+      } catch { st = null; }
+      if (!st) {
+        delete fetchIntervals[batchId]; // release the claim — nothing rendered
+        return;
+      }
+
+      if (fetchBases[batchId] == null) {
+        fetchBases[batchId] = cardData.length;
+        (st.urls || []).forEach(u => {
+          cardData.push({ url: u.url || '', status: 'loading', fetched: true, batchId });
+          renderCard(cardData.length - 1);
+        });
+        updateCardsHead();
+      }
+      const ended = buildFetchCards(st);
+      if (st.finished) { clearFetchPoll(batchId); if (ended) afterBatchReady(); return; }
+
+      const iv = setInterval(async () => {
+        try {
+          const res = await fetch('/api/fetch/' + batchId);
+          if (res.status === 404) { clearFetchPoll(batchId); return; }
+          const s = await res.json();
+          if (s.error) { clearFetchPoll(batchId); return; }
+          const e = buildFetchCards(s);
+          if (s.finished) { clearFetchPoll(batchId); if (e) afterBatchReady(); }
+        } catch { clearFetchPoll(batchId); }
+      }, 700);
+      fetchIntervals[batchId] = iv;
+    }
+
+    function buildFetchCards(st) {
+      // Ignore snapshots that arrive after the batch's poller was cleared
+      // (late/overlapping response) — they must not append duplicate cards.
+      if (!(st.batch_id in fetchIntervals)) return false;
+      const base = fetchBases[st.batch_id] != null ? fetchBases[st.batch_id] : cardData.length;
+      if (fetchBases[st.batch_id] == null) fetchBases[st.batch_id] = base;
+      const items = st.urls || [];
+      let w = base; // write cursor for this batch's slot range
+      items.forEach((u) => {
+        // Map this item onto the batch's OWN slot range: skip slots belonging
+        // to other batches or to download jobs, but reuse this batch's slots
+        // in ANY state so repeated polls map 1:1 and never duplicate cards.
+        // Fresh slots are appended only when the batch truly grew (scrape
+        // pages expanding into many links).
+        let idx = w;
+        while (idx < cardData.length && cardData[idx] &&
+               cardData[idx].batchId !== st.batch_id) idx++;
+        if (idx >= cardData.length) {
+          cardData.push({ url: u.url || '', status: 'loading', fetched: true, batchId: st.batch_id });
+        }
+        w = idx + 1;
+        const existing = cardData[idx];
+        if (!existing) {
+          cardData[idx] = { url: u.url || '', status: 'loading', fetched: true, batchId: st.batch_id };
+        }
+        const c = cardData[idx];
+        c.batchId = st.batch_id;
+
+        // Once a card has moved past the loading phase (shown as ready, or a
+        // download/queue has started on it) a later fetch-batch poll must NEVER
+        // touch it again — resetting it to 'ready' is what made cards flicker
+        // between the ready (Download/Remove) and the downloading (Stop) state.
+        if (c.status !== 'loading') return;
+
+        let next;
+        if (u.status === 'done') {
+          next = {
+            status: 'ready',
+            title: u.title || '',
+            thumbnail: u.thumbnail || '',
+            duration: u.duration,
+            uploader: u.uploader || '',
+            formats: u.formats || [],
+            selectedFormatId: u.formats?.[0]?.id || null,
+            videoId: u.id || null,
+            extractor: u.extractor || '',
+            alreadyOnServer: !!u.already_on_server,
+            existingFile: u.existing_file || '',
+          };
+        } else if (u.status === 'error') {
+          next = {
+            status: 'info-error',
+            error: u.error || 'Could not fetch video',
+          };
+        } else {
+          next = { status: 'loading' };
+        }
+        const changed = Object.keys(next).some(k => c[k] !== next[k]);
+        Object.assign(c, next);
+        if (changed) renderCard(idx);
+      });
+      updateCardsHead();
+      return st.finished;
+    }
+
+    function afterBatchReady() {
+      if (readyIndexes().length > 1) renderDownloadAll();
+      if (autoDownload) startAutoDownloads();
+    }
+
+    function progressState(c) {
+      const pct = Math.max(0, Math.min(100, c.progress || 0));
+      let fillClass = 'progress-fill';
+      let leftLabel = `${Math.round(pct)}%`;
+      let rightLabel = '';
+      let width = pct;
+
+      if (c.status === 'queued') {
+        fillClass += ' queued';
+        leftLabel = 'Queued';
+        rightLabel = 'Waiting…';
+        width = 4;
+      } else if (c.status === 'processing') {
+        fillClass += ' processing';
+        leftLabel = 'Processing';
+        rightLabel = 'Merging / converting…';
+        width = 100;
+      } else if (c.status === 'resolving') {
+        fillClass += ' processing';
+        leftLabel = 'Resolving';
+        rightLabel = 'Finding media source…';
+        width = 100;
+      } else if (c.status === 'downloading') {
+        if (c.size) leftLabel = `${Math.round(pct)}% · ${c.size}`;
+        const bits = [];
+        if (c.speed) bits.push(c.speed);
+        if (c.eta) bits.push('ETA ' + c.eta);
+        rightLabel = bits.join(' · ');
+      }
+      return { fillClass, leftLabel, rightLabel, width };
+    }
+
+    function progressBarHtml(idx) {
+      const s = progressState(cardData[idx]);
+      return `
+        <div class="progress-wrap">
+          <div class="progress-track"><div class="${s.fillClass}" id="pf-${idx}" style="width:${s.width}%"></div></div>
+          <div class="progress-info"><span class="pi-left" id="pl-${idx}">${esc(s.leftLabel)}</span><span id="pr-${idx}">${esc(s.rightLabel)}</span></div>
+        </div>`;
+    }
+
+    // Patch just the progress bar/labels in place. Returns false if the card
+    // isn't currently showing a progress bar (caller should do a full render).
+    function updateProgressDom(idx) {
+      const fill = document.getElementById(`pf-${idx}`);
+      if (!fill) return false;
+      const s = progressState(cardData[idx]);
+      fill.className = s.fillClass;
+      fill.style.width = s.width + '%';
+      const pl = document.getElementById(`pl-${idx}`);
+      if (pl) pl.textContent = s.leftLabel;
+      const pr = document.getElementById(`pr-${idx}`);
+      if (pr) pr.textContent = s.rightLabel;
+      return true;
+    }
+
+    function renderCard(idx) {
+      const c = cardData[idx];
+      if (!c || c.status === 'deleted') {
+        const gone = document.getElementById(`card-${idx}`);
+        if (gone) gone.remove();
+        return;
+      }
+      let el = document.getElementById(`card-${idx}`);
+      if (!el) {
+        el = document.createElement('div');
+        el.id = `card-${idx}`;
+        el.className = 'card';
+        document.getElementById('cards').appendChild(el);
+      }
+
+      // Loading skeleton
+      if (c.status === 'loading') {
+        el.className = 'card';
+        el.innerHTML = `
+          <div class="card-thumb loading"></div>
+          <div class="card-body">
+            <div class="skeleton-line medium"></div>
+            <div class="skeleton-line short"></div>
+          </div>
+        `;
+        return;
+      }
+
+      // Error state
+      if (c.status === 'info-error') {
+        el.className = 'card card-error';
+        el.innerHTML = `
+          <div class="card-thumb">
+            <div class="card-error-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="card-title" style="color:var(--error)">Could not fetch video</div>
+            <div class="card-error-msg">${esc(friendlyError(c.error || ''))}</div>
+            <div class="card-error-url">${esc(c.url)}</div>
+          </div>
+        `;
+        return;
+      }
+
+      // Ready / downloading / done / error states
+      el.className = 'card';
+      const isAudio = currentFormat === 'audio';
+
+      let thumbHtml;
+      if (isAudio) {
+        thumbHtml = `<div class="no-thumb" style="color:var(--accent)"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><polygon points="5 3 19 12 5 21 5 3"/></svg></div>`;
+      } else if (c.thumbnail) {
+        thumbHtml = `<img src="${c.thumbnail}" alt="">`;
+      } else {
+        thumbHtml = `<div class="no-thumb"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="20" rx="2"/><circle cx="8" cy="8" r="1.5"/><path d="m21 15-5-5L5 21"/></svg></div>`;
+      }
+
+      let qualityChips = '';
+      if (!isAudio && c.formats && c.formats.length > 1) {
+        qualityChips = c.formats.map(f =>
+          `<button class="q-chip${f.id === c.selectedFormatId ? ' active' : ''}" onclick="pickFormat(${idx}, '${f.id}')">${f.label}</button>`
+        ).join('');
+      }
+
+      let actionHtml = '';
+      if (c.status === 'ready') {
+        const already = c.alreadyOnServer ? `<span class="already-badge">✓ On server</span>` : '';
+        actionHtml = `${already}<button class="card-dl-btn" onclick="dlCard(${idx})">Download</button>${qualityChips}
+          <button class="card-x-btn" onclick="deleteCard(${idx})">Remove</button>`;
+      } else if (c.status === 'queued' || c.status === 'downloading' || c.status === 'processing' || c.status === 'resolving') {
+        actionHtml = `${progressBarHtml(idx)}<button class="card-x-btn" onclick="stopCard(${idx})">Stop</button>`;
+      } else if (c.status === 'done') {
+        const doneLabel = c.deduped ? '✓ Already on server' : '✓ Saved to server';
+        const saveHref = c.jobId
+          ? `/api/file/${c.jobId}`
+          : (c.filename ? `/api/library/download?f=${encodeURIComponent(c.filename)}` : '');
+        const saveBtn = saveHref
+          ? `<a class="card-dl-btn done" href="${saveHref}" download>Download</a>`
+          : '';
+        actionHtml = `${saveBtn}<span class="card-status done">${doneLabel}</span>
+          <span class="card-saved-name">${esc(c.filename || '')}</span>
+          <button class="card-x-btn" onclick="deleteCard(${idx})">Delete</button>`;
+      } else if (c.status === 'cancelled') {
+        actionHtml = `<button class="card-dl-btn" onclick="dlCard(${idx})">Retry</button>
+          <span class="card-status">Stopped</span>
+          <button class="card-x-btn" onclick="deleteCard(${idx})">Delete</button>`;
+      } else if (c.status === 'error') {
+        const rawErr = c.error || '';
+        actionHtml = `<button class="card-dl-btn" onclick="dlCard(${idx})">Retry</button>
+          <button class="card-x-btn" onclick="deleteCard(${idx})">Delete</button>
+          <div class="card-dl-error">${esc(friendlyError(rawErr || 'Download failed'))}</div>
+          ${rawErr.length > 40 ? `<div class="card-dl-error-detail">${esc(rawErr)}</div>` : ''}`;
+      }
+
+      el.innerHTML = `
+        <div class="card-thumb">${thumbHtml}</div>
+        <div class="card-body">
+          <div class="card-title">${esc(c.title || 'Untitled')}</div>
+          <div class="card-meta">${esc(c.uploader)}${c.duration ? ' · ' + fmtDur(c.duration) : ''}</div>
+          <div class="card-actions">${actionHtml}</div>
+        </div>
+      `;
+    }
+
+    function renderDownloadAll() {
+      let bar = document.getElementById('dl-all-bar');
+      if (!bar) {
+        bar = document.createElement('div');
+        bar.id = 'dl-all-bar';
+        bar.className = 'dl-all-bar-wrap';
+        document.getElementById('cards').appendChild(bar);
+      }
+      bar.innerHTML = `
+        <div class="dl-all-row">
+          <button class="dl-all-btn" onclick="dlAll()">Download All</button>
+        </div>
+        <div id="overall-progress" class="overall-progress" style="display:none">
+          <div class="overall-head">
+            <span id="overall-label">Starting…</span>
+            <button class="overall-close" type="button" onclick="hideOverall()" aria-label="Dismiss">×</button>
+          </div>
+          <div class="progress-track"><div id="overall-fill" class="progress-fill" style="width:0%"></div></div>
+          <div class="overall-sub" id="overall-sub"></div>
+        </div>`;
+    }
+
+    function pickFormat(idx, formatId) {
+      cardData[idx].selectedFormatId = formatId;
+      renderCard(idx);
+    }
+
+    async function dlCard(idx) {
+      const c = cardData[idx];
+      c.status = 'downloading';
+      c.error = null;
+      c.cancelRequested = false;
+      renderCard(idx);
+
+      try {
+        const res = await fetch('/api/download', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            url: c.url,
+            format: currentFormat,
+            format_id: c.selectedFormatId,
+            title: c.title || '',
+            thumbnail: c.thumbnail || '',
+            group_id: selectedGroup,
+            id: c.videoId,
+            extractor: c.extractor,
+          }),
+        });
+        const data = await res.json();
+        if (data.error) {
+          c.status = 'error';
+          c.error = data.error;
+          renderCard(idx);
+          return;
+        }
+        c.jobId = data.job_id;
+        if (data.status === 'done') {
+          // Already on the server — no download needed.
+          applyJobUpdate(idx, data);
+          return;
+        }
+        if (c.cancelRequested) {
+          // Stop was clicked before the job id came back — cancel it now.
+          c.status = 'cancelled';
+          renderCard(idx);
+          try { await fetch(`/api/cancel/${c.jobId}`, { method: 'POST' }); } catch {}
+          return;
+        }
+        pollCard(idx);
+      } catch (err) {
+        c.status = 'error';
+        c.error = err.message;
+        renderCard(idx);
+      }
+    }
+
+    // Merge a server status payload into a card. Returns true if the job is in a
+    // terminal state (the poller should stop). Shared by single- and batch-poll.
+    function applyJobUpdate(idx, data) {
+      const c = cardData[idx];
+      if (!c) return true;
+
+      // Once stopped locally, only a terminal server state may touch the card —
+      // never let a stale 'downloading' tick un-cancel it.
+      const lockedCancelled = c.status === 'cancelled' || c.cancelRequested;
+
+      if (!lockedCancelled) {
+        if (typeof data.progress === 'number') c.progress = data.progress;
+        c.speed = data.speed || '';
+        c.eta = data.eta || '';
+        c.size = data.size || '';
+        c.downloaded = data.downloaded || '';
+      }
+
+      if (data.status === 'done') {
+        if (c.status === 'done') return true;
+        c.status = 'done';
+        c.progress = 100;
+        c.filename = data.filename;
+        c.deduped = !!data.deduped;
+        scheduleLibraryRefresh();
+        renderCard(idx);
+        return true;
+      }
+      if (data.status === 'error') {
+        if (c.status === 'error') return true;
+        c.status = 'error';
+        c.error = data.error;
+        renderCard(idx);
+        return true;
+      }
+      if (data.status === 'cancelled') {
+        if (c.status === 'cancelled') return true;
+        c.status = 'cancelled';
+        c.speed = ''; c.eta = '';
+        renderCard(idx);
+        return true;
+      }
+      // Active tick: queued / downloading / processing.
+      if (lockedCancelled) return false;
+      const prevStatus = c.status;
+      c.status = data.status;
+      // Same status → patch just the progress DOM instead of rebuilding the card.
+      if (data.status === prevStatus && updateProgressDom(idx)) return false;
+      renderCard(idx);
+      return false;
+    }
+
+    function pollCard(idx) {
+      const c = cardData[idx];
+      const iv = setInterval(async () => {
+        try {
+          const res = await fetch(`/api/status/${c.jobId}`);
+          if (res.status === 404) { clearInterval(iv); c.pollIv = null; return; } // job deleted
+          const data = await res.json();
+          if (applyJobUpdate(idx, data)) { clearInterval(iv); c.pollIv = null; }
+        } catch {
+          clearInterval(iv);
+          c.pollIv = null;
+          c.status = 'error';
+          c.error = 'Lost connection to server';
+          renderCard(idx);
+        }
+      }, 800);
+      c.pollIv = iv;
+    }
+
+    async function stopCard(idx) {
+      const c = cardData[idx];
+      if (c.pollIv) { clearInterval(c.pollIv); c.pollIv = null; }
+      c.status = 'cancelled';
+      c.speed = ''; c.eta = '';
+      c.cancelRequested = true;  // in case the job id hasn't arrived yet
+      renderCard(idx);
+      if (c.jobId) {
+        try { await fetch(`/api/cancel/${c.jobId}`, { method: 'POST' }); } catch {}
+      }
+    }
+
+    async function deleteCard(idx) {
+      const c = cardData[idx];
+      if (c.pollIv) { clearInterval(c.pollIv); c.pollIv = null; }
+      const jobId = c.jobId;
+      // Keep the batchId on the tombstone: the slot still belongs to its fetch
+      // batch, so later batch polls keep mapping 1:1 instead of drifting.
+      cardData[idx] = { status: 'deleted', url: c.url, batchId: c.batchId };
+      const el = document.getElementById(`card-${idx}`);
+      if (el) el.remove();
+      refreshDownloadAll();
+      if (jobId) {
+        try { await fetch(`/api/delete/${jobId}`, { method: 'POST' }); } catch {}
+      }
+    }
+
+    function refreshDownloadAll() {
+      const alive = cardData.filter(c => c && c.status !== 'deleted');
+      if (!alive.length) {
+        const bar = document.getElementById('dl-all-bar');
+        if (bar) bar.remove();
+      }
+      updateCardsHead();
+    }
+
+    async function dlAll() {
+      const readyIdx = readyIndexes();
+      if (!readyIdx.length) return;
+
+      renderDownloadAll();
+      const overall = document.getElementById('overall-progress');
+      if (overall) overall.style.display = 'block';
+      const btn = document.querySelector('.dl-all-btn');
+      if (btn) { btn.disabled = true; btn.textContent = 'Downloading…'; }
+
+      // Order matches readyIdx so we can map returned jobs back to cards.
+      const items = readyIdx.map(i => ({
+        url: cardData[i].url,
+        format: currentFormat,
+        format_id: cardData[i].selectedFormatId,
+        title: cardData[i].title || '',
+        thumbnail: cardData[i].thumbnail || '',
+        group_id: selectedGroup,
+        id: cardData[i].videoId,
+        extractor: cardData[i].extractor,
+      }));
+
+      readyIdx.forEach(i => {
+        cardData[i].status = 'queued';
+        cardData[i].progress = 0;
+        cardData[i].speed = '';
+        cardData[i].eta = '';
+        cardData[i].cancelRequested = false;
+        renderCard(i);
+      });
+
+      let data;
+      try {
+        const res = await fetch('/api/batch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ items }),
+        });
+        data = await res.json();
+      } catch {
+        readyIdx.forEach(i => { cardData[i].status = 'error'; cardData[i].error = 'Failed to start batch'; renderCard(i); });
+        if (btn) { btn.disabled = false; btn.textContent = 'Download All'; }
+        return;
+      }
+
+      if (data.error || !data.jobs) {
+        readyIdx.forEach(i => { cardData[i].status = 'error'; cardData[i].error = data.error || 'Batch failed'; renderCard(i); });
+        if (btn) { btn.disabled = false; btn.textContent = 'Download All'; }
+        return;
+      }
+
+      data.jobs.forEach((j, k) => {
+        const idx = readyIdx[k];
+        if (idx === undefined) return;
+        cardData[idx].jobId = j.job_id;
+        // Honor a Stop clicked before the job id arrived.
+        if (cardData[idx].cancelRequested) {
+          fetch(`/api/cancel/${j.job_id}`, { method: 'POST' }).catch(() => {});
+        }
+      });
+
+      pollBatch(data.batch_id);
+    }
+
+    function pollBatch(batchId) {
+      const iv = setInterval(async () => {
+        let data;
+        try {
+          const res = await fetch(`/api/batch/${batchId}`);
+          if (res.status === 404) { clearInterval(iv); batchPollIv = null; return; }
+          data = await res.json();
+        } catch {
+          return; // transient — keep polling
+        }
+        if (data.error) { clearInterval(iv); batchPollIv = null; return; }
+
+        data.jobs.forEach(jd => {
+          const idx = cardData.findIndex(c => c && c.jobId === jd.job_id);
+          if (idx >= 0) applyJobUpdate(idx, jd);
+        });
+
+        updateOverall(data);
+
+        if (data.finished) {
+          clearInterval(iv);
+          batchPollIv = null;
+          const btn = document.querySelector('.dl-all-btn');
+          if (btn) { btn.disabled = false; btn.textContent = 'Download All'; }
+          setTimeout(hideOverall, 6000);
+        }
+      }, 800);
+      batchPollIv = iv;
+    }
+
+    function updateOverall(data) {
+      const fill = document.getElementById('overall-fill');
+      const label = document.getElementById('overall-label');
+      const sub = document.getElementById('overall-sub');
+      if (!fill || !label) return;
+      const pct = data.overall_progress || 0;
+      fill.style.width = pct + '%';
+      fill.className = data.finished ? 'progress-fill done' : 'progress-fill';
+      label.textContent = `${data.completed}/${data.total} complete · ${Math.round(pct)}%`;
+      if (sub) {
+        const bits = [];
+        if (data.errored) bits.push(`${data.errored} failed`);
+        if (data.cancelled) bits.push(`${data.cancelled} stopped`);
+        sub.textContent = bits.length ? bits.join(' · ') : (data.finished ? 'All done ✓' : 'Downloading…');
+      }
+    }
+
+    // A page refresh wipes the JS state (cards, batch id, pollers) — but the
+    // downloads keep running on the server. Re-attach the bottom-right
+    // overall bar to any batch that is still in flight so progress stays
+    // visible instead of vanishing on reload. Cards are NOT rebuilt; the bar
+    // polls the batch directly until it settles.
+    async function restoreActiveBatches() {
+      try {
+        const res = await fetch('/api/batches/active');
+        const data = await res.json();
+        const ids = (data && data.batches) || [];
+        if (!ids.length) return;
+        const op = document.getElementById('overall-progress');
+        if (op) op.style.display = 'block';
+        // Newest session last — that is the one the user was watching.
+        pollBatch(ids[ids.length - 1]);
+      } catch {}
+    }
+  </script>
+</body>
+</html>
