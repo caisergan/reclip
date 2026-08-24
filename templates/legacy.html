@@ -2400,10 +2400,10 @@
             alreadyOnServer: !!u.already_on_server,
             existingFile: u.existing_file || '',
           };
-        } else if (u.status === 'error') {
+        } else if (u.status === 'error' || u.status === 'cancelled') {
           next = {
             status: 'info-error',
-            error: u.error || 'Could not fetch video',
+            error: u.error || (u.status === 'cancelled' ? 'Fetch stopped' : 'Could not fetch video'),
           };
         } else {
           next = { status: 'loading' };

@@ -163,6 +163,11 @@
   .split-cta{position:relative; flex:1; min-width:0; display:flex}
   .split-cta>.cta{border-radius:var(--radius-md) 0 0 var(--radius-md)}
   .split-cta>.cta:hover{transform:none}
+  .fetch-concurrency{height:40px; min-width:66px; flex:none; display:flex; align-items:center; justify-content:center; gap:4px; padding:0 7px; border-top:1px solid var(--accent); border-bottom:1px solid var(--accent); border-left:1px solid rgba(255,255,255,.22); background:var(--accent); color:#fff}
+  .fetch-concurrency svg{width:13px;height:13px;opacity:.78;pointer-events:none}
+  .fetch-concurrency select{width:37px; height:26px; padding:0 13px 0 1px; border:0; outline:0; appearance:none; color:#fff; background:transparent url("data:image/svg+xml,%3Csvg width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2.5' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='m7 10 5 5 5-5'/%3E%3C/svg%3E") no-repeat right center; font:600 11px 'JetBrains Mono',monospace; cursor:pointer}
+  .fetch-concurrency select option{color:var(--fg);background:var(--card)}
+  .fetch-concurrency:focus-within{background:var(--accent-hover);box-shadow:inset 0 0 0 2px rgba(255,255,255,.24)}
   .fetch-menu-toggle{width:40px; height:40px; flex:none; display:inline-flex; align-items:center; justify-content:center; border:1px solid var(--accent); border-left-color:rgba(255,255,255,.22); border-radius:0 var(--radius-md) var(--radius-md) 0; background:var(--accent); color:#fff; cursor:pointer; transition:all .15s}
   .fetch-menu-toggle:hover{background:var(--accent-hover);border-color:var(--accent-hover);border-left-color:rgba(255,255,255,.22)}
   .fetch-menu-toggle:disabled{opacity:.5;cursor:not-allowed}
@@ -199,17 +204,41 @@
   .examples button:hover{border-color:var(--accent); color:var(--accent); background:var(--bg-subtle)}
   /* Cards header */
   .cards-head{
-    display:flex; align-items:center; justify-content:space-between; gap:12px;
+    display:flex; align-items:center; justify-content:space-between; gap:10px 14px; flex-wrap:wrap;
     padding:4px 2px 0;
   }
-  .cards-head h3{font-size:12px; font-weight:600; letter-spacing:0.05em; text-transform:uppercase; color:var(--muted); display:flex; align-items:center; gap:8px}
-  .cards-head h3 input{accent-color:var(--accent)}
-  .cards-head .actions{display:flex; gap:8px; align-items:center}
+  .cards-head-main{flex:1; min-width:90px}
+  .cards-title-row{display:flex; align-items:center; gap:8px; min-width:0}
+  .cards-head h3{font-size:12px; font-weight:600; letter-spacing:0.05em; text-transform:uppercase; color:var(--muted)}
+  .cards-head .actions{display:flex; gap:7px; align-items:center; justify-content:flex-end; flex-wrap:wrap}
   .bulk-info{font-size:11px; font-weight:500; color:var(--accent); background:rgba(62,62,68,0.08); padding:4px 8px; border-radius:999px}
+  .fetch-progress{order:3; flex:1 0 100%; display:grid; grid-template-columns:auto minmax(120px,1fr) 34px; align-items:center; gap:8px}
+  .fetch-progress[hidden]{display:none}
+  .fetch-progress-label{min-width:0; overflow:hidden; text-overflow:ellipsis; font:500 10.5px 'JetBrains Mono',monospace; color:var(--muted); white-space:nowrap}
+  .fetch-progress-track{height:6px; overflow:hidden; border-radius:999px; background:var(--bg-muted); box-shadow:inset 0 0 0 1px rgba(111,116,125,.08)}
+  .fetch-progress-fill{height:100%; width:0; border-radius:inherit; background:linear-gradient(90deg,#5B63E8,#38A7D8); transition:width .3s ease}
+  .fetch-progress.failed .fetch-progress-fill{background:linear-gradient(90deg,#5B63E8,#E58B55)}
+  .fetch-progress.paused .fetch-progress-fill{opacity:.58}
+  .fetch-progress-count{font:600 10px 'JetBrains Mono',monospace; color:var(--fg); text-align:right}
+  .select-all-btn{height:32px; padding:0 8px 0 7px; display:inline-flex; align-items:center; gap:6px; border:1px solid var(--border-strong); border-radius:9px; background:var(--card); color:var(--fg); cursor:pointer; font:600 11.5px 'Inter',sans-serif; transition:all .15s}
+  .select-all-btn[hidden]{display:none}
+  .select-all-btn:hover{border-color:var(--focus); background:#F7F7FF; color:#454CC4}
+  .select-all-btn.active{border-color:var(--focus); background:#EEF0FF; color:#454CC4; box-shadow:0 0 0 2px rgba(91,99,232,.08)}
+  .select-all-btn.partial{border-color:#C7D2FE; background:#F7F7FF}
+  .select-all-btn svg{width:15px; height:15px}
+  .select-all-count{min-width:20px; padding:2px 5px; border-radius:999px; background:var(--bg-muted); color:var(--muted); font:600 9.5px 'JetBrains Mono',monospace; text-align:center}
+  .select-all-btn.active .select-all-count{background:#fff; color:#454CC4}
   .ghost-btn{
     font-size:12px; font-weight:500; padding:6px 11px; border-radius:8px; border:1px solid var(--border); background:var(--card); color:var(--muted); cursor:pointer; transition:all .15s;
   }
   .ghost-btn:hover{border-color:var(--border-strong); color:var(--fg)}
+  .ghost-btn:disabled{opacity:.45;cursor:not-allowed}
+  .ghost-btn.fetch-control{display:inline-flex;align-items:center;gap:5px}
+  .ghost-btn.fetch-control[hidden]{display:none}
+  .ghost-btn.fetch-control svg{width:13px;height:13px}
+  .ghost-btn.fetch-control.active{color:#454CC4;border-color:#C7D2FE;background:#F3F4FF}
+  .ghost-btn.danger{color:#B4232A;border-color:#F2C8CB;background:#FFF9F9}
+  .ghost-btn.danger:hover{color:#991B1F;border-color:#E9AEB3;background:#FFF1F2}
   .ghost-btn.primary{background:var(--accent); color:#fff; border-color:var(--accent)}
   .ghost-btn.primary:hover{background:var(--accent-hover); border-color:var(--accent-hover)}
   /* Cards */
@@ -221,11 +250,13 @@
     transition:all .15s; animation: in .3s cubic-bezier(.16,1,.3,1); position:relative;
   }
   .card:hover{border-color:var(--border-strong); box-shadow:var(--shadow-card)}
+  .card.selectable{cursor:pointer}
+  .card.selectable:focus-visible{outline:none; border-color:var(--focus); box-shadow:0 0 0 3px rgba(91,99,232,.12)}
   .card.downloading{border-color:var(--accent); box-shadow:0 0 0 1px rgba(62,62,68,0.08)}
-  .card.selected{border-color:var(--accent); background:#FAFAFB; box-shadow:0 0 0 1px rgba(62,62,68,0.08)}
+  .card.selected{border-color:var(--focus); background:#F8F8FF; box-shadow:inset 3px 0 0 var(--focus),0 0 0 1px rgba(91,99,232,.08)}
   .card.error{border-color:#FECACA; background:#FFFBFB}
+  .card.stopped{border-color:var(--border-strong); background:var(--bg-subtle)}
   @keyframes in{from{opacity:0; transform:translateY(6px)} to{opacity:1; transform:translateY(0)}}
-  .card-check{position:absolute; top:10px; left:10px; width:18px;height:18px; accent-color:var(--accent)}
   .thumb-wrap{
     width:148px; min-width:148px; height:84px; border-radius:8px; overflow:hidden; background:var(--bg-muted); position:relative; flex-shrink:0;
   }
@@ -237,8 +268,10 @@
     padding:2px 6px; border-radius:6px;
   }
   .card-body{flex:1; min-width:0; display:flex; flex-direction:column; gap:3px; padding-left:2px}
-  .card-body.has-check{padding-left:18px}
-  .card-title{font-size:13.5px; font-weight:600; line-height:1.35; color:var(--fg); display:-webkit-box; -webkit-line-clamp:1; -webkit-box-orient:vertical; overflow:hidden}
+  .card-title-row{display:flex; align-items:center; gap:8px; min-width:0}
+  .card-title{flex:1; min-width:0; font-size:13.5px; font-weight:600; line-height:1.35; color:var(--fg); display:-webkit-box; -webkit-line-clamp:1; -webkit-box-orient:vertical; overflow:hidden}
+  .card-selected-badge{flex:none; display:inline-flex; align-items:center; gap:4px; padding:3px 7px; border-radius:999px; color:#454CC4; background:#EEF0FF; border:1px solid #D7DAFF; font:600 9.5px 'Inter',sans-serif}
+  .card-selected-badge svg{width:11px;height:11px}
   .card-meta{font-size:11px; font-family:'JetBrains Mono', monospace; color:var(--muted)}
   .card-foot{margin-top:6px; display:flex; align-items:center; gap:6px; flex-wrap:wrap}
   .btn-sm{
@@ -499,6 +532,9 @@
     .dropzone-head{align-items:flex-start;flex-wrap:wrap}
     .header-options{width:100%;margin-left:0}
     .header-options .group-select{flex:1;width:auto}
+    .cards-head{align-items:stretch; flex-direction:column}
+    .cards-head .actions{justify-content:flex-start}
+    .fetch-progress{max-width:none}
     .card{flex-direction:column}
     .thumb-wrap{width:100%; min-width:0; height:168px}
     .ctl-row{flex-wrap:wrap}
@@ -565,6 +601,7 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
             <span id="goLabel">Fetch</span>
           </button>
+          <label class="fetch-concurrency" title="Concurrent metadata fetches"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 7h12m-3-3 3 3-3 3M4 17h12m-3-3 3 3-3 3"/></svg><select id="fetchConcSel" aria-label="Concurrent metadata fetches" onchange="setFetchConcurrency(this.value)"><option value="1">1×</option><option value="2">2×</option><option value="3">3×</option><option value="4">4×</option><option value="6" selected>6×</option><option value="8">8×</option><option value="12">12×</option><option value="16">16×</option></select></label>
           <button class="fetch-menu-toggle" id="fetchMenuBtn" type="button" title="Choose fetch action" aria-haspopup="menu" aria-expanded="false" onclick="toggleFetchMenu(event)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m7 10 5 5 5-5"/></svg></button>
           <div class="fetch-action-menu" id="fetchActionMenu" role="menu" hidden>
             <button class="active" id="fetchOnlyOption" type="button" role="menuitem" onclick="setFetchAction(false)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 12h14M12 5l7 7-7 7"/></svg><span class="fetch-action-copy"><b>Fetch only</b><small>Review files before downloading</small></span></button>
@@ -575,15 +612,24 @@
     </div>
 
     <div class="cards-head" id="cardsHead" style="display:none">
-      <h3>
-        <input type="checkbox" id="selectAll" onchange="toggleSelectAll(this)">
-        <span id="cardsTitle">0 videos</span>
-        <span class="bulk-info" id="bulkInfo" style="display:none">0 selected</span>
-      </h3>
+      <div class="cards-head-main">
+        <div class="cards-title-row">
+          <h3 id="cardsTitle">0 videos</h3>
+          <span class="bulk-info" id="bulkInfo" style="display:none">0 selected</span>
+        </div>
+      </div>
       <div class="actions">
+        <button class="ghost-btn fetch-control" id="pauseFetchBtn" type="button" hidden onclick="toggleFetchPause()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><path d="M8 5v14M16 5v14"/></svg><span id="pauseFetchLabel">Pause</span></button>
+        <button class="ghost-btn fetch-control danger" id="stopFetchBtn" type="button" title="Stop all unfinished metadata fetches" hidden onclick="stopFetching()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1"/></svg><span>Stop</span></button>
+        <button class="select-all-btn" id="selectAllBtn" type="button" aria-pressed="false" hidden onclick="toggleSelectAll()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="13" height="13" rx="2"/><path d="m8 10 2.2 2.2L14 8.5M19 8v11H8"/></svg><span id="selectAllLabel">Select all</span><span class="select-all-count" id="selectAllCount">0</span></button>
         <button class="ghost-btn" id="dlSelectedBtn" style="display:none" onclick="dlSelected()">Download selected</button>
         <button class="ghost-btn" onclick="clearCards()">Clear</button>
         <button class="ghost-btn primary" id="dlAllBtn" onclick="downloadAll()">Download all</button>
+      </div>
+      <div class="fetch-progress" id="fetchProgress" role="progressbar" aria-label="Video fetch progress" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0" hidden>
+        <span class="fetch-progress-label" id="fetchProgressLabel">0 of 0 links fetched</span>
+        <span class="fetch-progress-track"><span class="fetch-progress-fill" id="fetchProgressFill"></span></span>
+        <span class="fetch-progress-count" id="fetchProgressCount">0%</span>
       </div>
     </div>
     <div class="cards" id="cards">
@@ -882,6 +928,7 @@ dropArea.addEventListener('drop', e=>{
 });
 
 let cards=[];
+const fetchBatchProgress=new Map();
 const ACTIVE_DOWNLOAD_STATES=['queued','downloading','processing','resolving'];
 function friendlyError(error){
   const value=String(error||'Unknown error');
@@ -899,12 +946,57 @@ function cardDuration(seconds){
 }
 function cardHost(url){try{return new URL(url).hostname.replace(/^www\./,'');}catch{return '';}}
 function readyIndexes(){return cards.map((card,index)=>card?.status==='ready'?index:-1).filter(index=>index>=0);}
+function rememberFetchProgress(state){
+  if(!state?.batch_id)return;
+  const items=Array.isArray(state.urls)?state.urls:[];
+  const fetched=items.filter(item=>item.status==='done').length;
+  const failed=items.filter(item=>item.status==='error').length;
+  const cancelled=items.filter(item=>item.status==='cancelled').length;
+  fetchBatchProgress.set(state.batch_id,{total:items.length,fetched,failed,cancelled,paused:!!state.paused,stopped:!!state.stopped,finished:!!state.finished});
+}
+function renderFetchProgress(aliveCards){
+  const root=document.getElementById('fetchProgress');
+  const pauseButton=document.getElementById('pauseFetchBtn');
+  const stopButton=document.getElementById('stopFetchBtn');
+  const visibleBatches=new Set(aliveCards.map(card=>card?.batchId).filter(Boolean));
+  for(const batchId of fetchBatchProgress.keys())if(!visibleBatches.has(batchId))fetchBatchProgress.delete(batchId);
+  const batches=[...fetchBatchProgress.values()];
+  const active=batches.filter(item=>!item.finished&&!item.stopped);
+  const allPaused=active.length>0&&active.every(item=>item.paused);
+  pauseButton.hidden=!active.length;
+  stopButton.hidden=!active.length;
+  pauseButton.classList.toggle('active',allPaused);
+  pauseButton.setAttribute('aria-pressed',String(allPaused));
+  pauseButton.title=allPaused?'Resume queued metadata fetches':'Pause queued metadata fetches after current requests finish';
+  document.getElementById('pauseFetchLabel').textContent=allPaused?'Resume':'Pause';
+  const totals=batches.reduce((sum,item)=>({total:sum.total+item.total,fetched:sum.fetched+item.fetched,failed:sum.failed+item.failed,cancelled:sum.cancelled+item.cancelled}),{total:0,fetched:0,failed:0,cancelled:0});
+  if(!totals.total){root.hidden=true;return;}
+  const completed=Math.min(totals.total,totals.fetched+totals.failed+totals.cancelled);
+  const percent=Math.round(completed/totals.total*100);
+  const noun=totals.total===1?'link':'links';
+  const details=[];
+  if(totals.failed)details.push(`${totals.failed} failed`);
+  if(totals.cancelled)details.push(`${totals.cancelled} stopped`);
+  if(allPaused)details.push('paused');
+  const label=`${totals.fetched} of ${totals.total} ${noun} fetched${details.length?' · '+details.join(' · '):''}`;
+  root.hidden=false;
+  root.classList.toggle('failed',totals.failed>0||totals.cancelled>0);
+  root.classList.toggle('paused',allPaused);
+  root.classList.toggle('complete',completed===totals.total);
+  root.setAttribute('aria-valuemax',String(totals.total));
+  root.setAttribute('aria-valuenow',String(completed));
+  root.setAttribute('aria-valuetext',`${label}; ${completed} processed`);
+  document.getElementById('fetchProgressLabel').textContent=label;
+  document.getElementById('fetchProgressFill').style.width=percent+'%';
+  document.getElementById('fetchProgressCount').textContent=percent+'%';
+}
 function renderCards(){
   const wrap=document.getElementById('cards');
   const head=document.getElementById('cardsHead');
   const empty=document.getElementById('emptyCards');
   const alive=cards.filter(card=>card&&card.status!=='deleted');
   wrap.querySelectorAll('.card').forEach(card=>card.remove());
+  renderFetchProgress(alive);
   if(!alive.length){
     head.style.display='none';
     if(empty) empty.style.display='flex';
@@ -920,9 +1012,15 @@ function renderCards(){
   bulkInfo.style.display=selected?'':'none';
   bulkInfo.textContent=selected?`${selected} selected`:'';
   dlSelBtn.style.display=selected?'':'none';
-  const selectAll=document.getElementById('selectAll');
-  selectAll.checked=ready.length>0&&selected===ready.length;
-  selectAll.indeterminate=selected>0&&selected<ready.length;
+  const selectAll=document.getElementById('selectAllBtn');
+  const allSelected=ready.length>0&&selected===ready.length;
+  selectAll.hidden=!ready.length;
+  selectAll.classList.toggle('active',allSelected);
+  selectAll.classList.toggle('partial',selected>0&&!allSelected);
+  selectAll.setAttribute('aria-pressed',String(allSelected));
+  selectAll.setAttribute('aria-label',allSelected?`Deselect all ${ready.length} fetched items`:`Select all ${ready.length} fetched items`);
+  document.getElementById('selectAllLabel').textContent=allSelected?'Deselect all':'Select all';
+  document.getElementById('selectAllCount').textContent=String(ready.length);
   document.getElementById('dlAllBtn').style.display=ready.length>1?'':'none';
 
   cards.forEach((card,index)=>{
@@ -934,13 +1032,25 @@ function renderCards(){
       element.innerHTML=`<div class="thumb-wrap" style="background:linear-gradient(90deg,#F4F4F5 25%,#ECECEE 50%,#F4F4F5 75%);background-size:200% 100%;animation:sh 1.2s infinite"></div><div class="card-body"><div style="height:12px;width:70%;border-radius:6px;background:#F4F4F5"></div><div style="height:10px;width:40%;border-radius:6px;background:#F4F4F5;margin-top:6px"></div></div>`;
       wrap.appendChild(element); return;
     }
-    if(card.status==='info-error'){
-      element.className='card error';
-      element.innerHTML=`<div class="thumb-wrap"><div class="ph"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="10"/><path d="M12 8v5M12 16h.01"/></svg></div></div><div class="card-body"><div class="card-title" style="color:#DC2626">Could not fetch</div><div class="error-text">${esc(friendlyError(card.error))}</div><div class="card-meta">${esc(card.url)}</div><div class="card-foot"><button class="btn-sm btn-ghost" onclick="retry(${index})">Retry</button><button class="btn-sm btn-ghost" onclick="removeCard(${index})">Remove</button></div></div>`;
+    if(card.status==='info-error'||card.status==='info-cancelled'){
+      const stopped=card.status==='info-cancelled';
+      element.className='card '+(stopped?'stopped':'error');
+      const icon=stopped?'<rect x="7" y="7" width="10" height="10" rx="1"/>':'<circle cx="12" cy="12" r="10"/><path d="M12 8v5M12 16h.01"/>';
+      element.innerHTML=`<div class="thumb-wrap"><div class="ph"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">${icon}</svg></div></div><div class="card-body"><div class="card-title" style="color:${stopped?'var(--fg)':'#DC2626'}">${stopped?'Fetch stopped':'Could not fetch'}</div><div class="${stopped?'card-meta':'error-text'}">${esc(stopped?'This link was not fetched.':friendlyError(card.error))}</div><div class="card-meta">${esc(card.url)}</div><div class="card-foot"><button class="btn-sm btn-ghost" onclick="retry(${index})">Retry</button><button class="btn-sm btn-ghost" onclick="removeCard(${index})">Remove</button></div></div>`;
       wrap.appendChild(element); return;
     }
 
-    element.className='card'+(card.selected?' selected':'')+(ACTIVE_DOWNLOAD_STATES.includes(card.status)?' downloading':'');
+    const selectable=card.status==='ready';
+    element.className='card'+(selectable?' selectable':'')+(card.selected?' selected':'')+(ACTIVE_DOWNLOAD_STATES.includes(card.status)?' downloading':'');
+    if(selectable){
+      element.tabIndex=0;
+      element.setAttribute('role','button');
+      element.setAttribute('aria-pressed',String(!!card.selected));
+      element.setAttribute('aria-label',`${card.selected?'Deselect':'Select'} ${card.title||'fetched item'}`);
+      element.title=card.selected?'Click card to deselect':'Click card to select';
+      element.addEventListener('click',event=>toggleCardSelection(index,event));
+      element.addEventListener('keydown',event=>toggleCardSelection(index,event));
+    }
     const isAudio=currentFormat==='audio';
     const thumbnail=card.thumbnail||card.thumb||'';
     const duration=cardDuration(card.duration);
@@ -970,13 +1080,28 @@ function renderCards(){
       footer=`<button class="btn-sm btn-primary" onclick="retry(${index})">Retry</button><button class="btn-sm btn-ghost" onclick="removeCard(${index})">Delete</button><div class="error-text" style="flex-basis:100%">${esc(friendlyError(card.error||'Download failed'))}</div>`;
     }
     const meta=[card.uploader||cardHost(card.url),duration].filter(Boolean).join(' · ');
-    const checkbox=card.status==='ready'?`<input type="checkbox" class="card-check" ${card.selected?'checked':''} onchange="toggleSelect(${index},this.checked)">`:'';
-    element.innerHTML=`${checkbox}<div class="thumb-wrap">${thumb}</div><div class="card-body${checkbox?' has-check':''}"><div class="card-title" title="${escAttr(card.title||'Untitled')}">${esc(card.title||'Untitled')}</div><div class="card-meta">${esc(meta)}</div><div class="card-foot">${footer}</div></div>`;
+    const selectedBadge=selectable&&card.selected?`<span class="card-selected-badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg>Selected</span>`:'';
+    element.innerHTML=`<div class="thumb-wrap">${thumb}</div><div class="card-body"><div class="card-title-row"><div class="card-title" title="${escAttr(card.title||'Untitled')}">${esc(card.title||'Untitled')}</div>${selectedBadge}</div><div class="card-meta">${esc(meta)}</div><div class="card-foot">${footer}</div></div>`;
     wrap.appendChild(element);
   });
 }
-function toggleSelect(index,value){if(cards[index]?.status==='ready'){cards[index].selected=!!value;renderCards();}}
-function toggleSelectAll(checkbox){readyIndexes().forEach(index=>{cards[index].selected=checkbox.checked;});renderCards();}
+function toggleCardSelection(index,event){
+  const card=cards[index];if(card?.status!=='ready')return;
+  const target=event?.target;
+  if(target instanceof Element&&target.closest('button,a,input,select,textarea,label'))return;
+  const keyboard=event?.type==='keydown';
+  if(keyboard&&event.key!=='Enter'&&event.key!==' ')return;
+  if(keyboard)event.preventDefault();
+  card.selected=!card.selected;
+  renderCards();
+  if(keyboard)requestAnimationFrame(()=>document.getElementById(`card-${index}`)?.focus({preventScroll:true}));
+}
+function toggleSelectAll(){
+  const ready=readyIndexes();
+  const select=ready.some(index=>!cards[index].selected);
+  ready.forEach(index=>{cards[index].selected=select;});
+  renderCards();
+}
 function dlSelected(){
   const selected=readyIndexes().filter(index=>cards[index].selected);
   if(!selected.length){toast('No selected ready items');return;}
@@ -998,13 +1123,15 @@ async function apiJson(path,options={}){
 async function startFetch(overrideUrls=null){
   const urls=overrideUrls||[...new Set(tokens(ta.value))];
   if(!urls.length){ta.focus();toast('Paste a link first');return;}
+  if(!Object.keys(fetchIntervals).length)fetchBatchProgress.clear();
   const button=document.getElementById('goBtn');
   const menuButton=document.getElementById('fetchMenuBtn');
   button.disabled=true;menuButton.disabled=true;closeFetchMenu();
   const old=button.innerHTML;
   button.innerHTML='<span style="width:14px;height:14px;border:2px solid #fff;border-right-color:transparent;border-radius:50%;display:inline-block;animation:spin .6s linear infinite"></span> Loading…';
   try{
-    const data=await apiJson('/api/fetch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({urls,mode:currentMode})});
+    const fetchConcurrent=Number(document.getElementById('fetchConcSel')?.value)||6;
+    const data=await apiJson('/api/fetch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({urls,mode:currentMode,fetch_concurrent:fetchConcurrent})});
     await attachFetchBatch(data.batch_id);
   }catch(error){
     cards.push({url:urls[0]||'',status:'info-error',error:error.message||'Could not start fetch',selected:false});
@@ -1016,6 +1143,29 @@ async function startFetch(overrideUrls=null){
 function clearFetchPoll(batchId){
   if(fetchIntervals[batchId]) clearInterval(fetchIntervals[batchId]);
   delete fetchIntervals[batchId];delete fetchBases[batchId];settledFetches.add(batchId);
+}
+function activeFetchBatchIds(){return Object.keys(fetchIntervals);}
+async function toggleFetchPause(){
+  const batchIds=activeFetchBatchIds();if(!batchIds.length)return;
+  const pause=!batchIds.every(batchId=>fetchBatchProgress.get(batchId)?.paused);
+  const button=document.getElementById('pauseFetchBtn');const stop=document.getElementById('stopFetchBtn');
+  button.disabled=true;stop.disabled=true;
+  try{
+    const states=await Promise.all(batchIds.map(batchId=>apiJson(`/api/fetch/${encodeURIComponent(batchId)}/pause`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({paused:pause})})));
+    states.forEach(rememberFetchProgress);renderCards();
+  }catch(error){toast(error.message||'Could not update fetch queue');}
+  finally{button.disabled=false;stop.disabled=false;}
+}
+async function stopFetching(){
+  const batchIds=activeFetchBatchIds();if(!batchIds.length)return;
+  const pause=document.getElementById('pauseFetchBtn');const button=document.getElementById('stopFetchBtn');
+  pause.disabled=true;button.disabled=true;
+  try{
+    const states=await Promise.all(batchIds.map(batchId=>apiJson(`/api/fetch/${encodeURIComponent(batchId)}/stop`,{method:'POST'})));
+    states.forEach(state=>{buildFetchCards(state);if(state.finished)clearFetchPoll(state.batch_id);});
+    toast('Fetching stopped');
+  }catch(error){toast(error.message||'Could not stop fetching');}
+  finally{pause.disabled=false;button.disabled=false;renderCards();}
 }
 async function attachFetchBatch(batchId){
   if(!batchId||batchId in fetchIntervals||batchId in fetchBases||settledFetches.has(batchId)) return;
@@ -1037,6 +1187,7 @@ async function attachFetchBatch(batchId){
 }
 function buildFetchCards(state){
   if(!(state.batch_id in fetchIntervals)) return;
+  rememberFetchProgress(state);
   const base=fetchBases[state.batch_id]??cards.length;
   if(fetchBases[state.batch_id]==null) fetchBases[state.batch_id]=base;
   let cursor=base;
@@ -1050,6 +1201,7 @@ function buildFetchCards(state){
     if(card.status!=='loading') return;
     if(item.status==='done') Object.assign(card,{url:item.url||card.url,status:'ready',title:item.title||'',thumbnail:item.thumbnail||'',duration:item.duration,uploader:item.uploader||'',formats:item.formats||[],selectedFormatId:item.formats?.[0]?.id||null,videoId:item.id||null,extractor:item.extractor||'',alreadyOnServer:!!item.already_on_server,existingFile:item.existing_file||'',selected:false});
     else if(item.status==='error') Object.assign(card,{status:'info-error',error:item.error||'Could not fetch item'});
+    else if(item.status==='cancelled') Object.assign(card,{status:'info-cancelled',error:item.error||'Fetch stopped'});
   });
   renderCards();
 }
@@ -1111,12 +1263,12 @@ async function removeCard(index){
 }
 function retry(index){
   const card=cards[index];if(!card)return;
-  if(card.status==='info-error'){const url=card.url;cards[index]={status:'deleted',url,batchId:card.batchId};renderCards();startFetch([url]);return;}
+  if(card.status==='info-error'||card.status==='info-cancelled'){const url=card.url;cards[index]={status:'deleted',url,batchId:card.batchId};renderCards();startFetch([url]);return;}
   card.status='ready';card.progress=0;card.speed='';card.eta='';card.cancelRequested=false;renderCards();downloadOne(index);
 }
 function clearCards(){
   cards.forEach(card=>{if(card?.pollTimer)clearInterval(card.pollTimer);if(card?.jobId&&ACTIVE_DOWNLOAD_STATES.includes(card.status))fetch('/api/cancel/'+encodeURIComponent(card.jobId),{method:'POST'}).catch(()=>{});});
-  Object.keys(fetchIntervals).forEach(clearFetchPoll);cards=[];renderCards();hideOverall();
+  Object.keys(fetchIntervals).forEach(clearFetchPoll);fetchBatchProgress.clear();cards=[];renderCards();hideOverall();
 }
 async function downloadIndexes(indexes){
   const ready=[...new Set(indexes)].filter(index=>cards[index]?.status==='ready');
@@ -1173,11 +1325,25 @@ async function restoreBackendState(){
 }
 async function loadDownloaderConfig(){
   if(location.protocol==='file:')return;
-  try{const config=await apiJson('/api/config');if(config.max_concurrent)setCustomSelectValue('concSel',String(config.max_concurrent));}catch{}
+  try{
+    const config=await apiJson('/api/config');
+    if(config.max_concurrent)setCustomSelectValue('concSel',String(config.max_concurrent));
+    if(config.fetch_concurrent){
+      const select=document.getElementById('fetchConcSel');const value=String(config.fetch_concurrent);
+      if(select&&!select.querySelector(`option[value="${value}"]`))select.add(new Option(`${value}×`,value));
+      if(select)select.value=value;
+    }
+  }catch{}
 }
 async function setConcurrency(value){
   try{await apiJson('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({max_concurrent:Number(value)})});}
   catch(error){toast(error.message);}
+}
+async function setFetchConcurrency(value){
+  try{
+    const config=await apiJson('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({fetch_concurrent:Number(value)})});
+    const select=document.getElementById('fetchConcSel');if(select)select.value=String(config.fetch_concurrent);
+  }catch(error){toast(error.message);}
 }
 
 // Downloads tools
