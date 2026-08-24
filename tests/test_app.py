@@ -50,6 +50,7 @@ class ReClipApiTests(unittest.TestCase):
         self.assertEqual(root.status_code, 200)
         self.assertIn(b"<title>ReClip</title>", root.data)
         self.assertIn(b'id="megaOverlay"', root.data)
+        self.assertIn(b'id="megaSelectAllBtn"', root.data)
         self.assertIn(b'id="splitFetch"', root.data)
 
         legacy = self.client.get("/legacy")
