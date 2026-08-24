@@ -17,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote, urljoin, urlparse
 from urllib.request import Request, urlopen
 from flask import Flask, request, jsonify, send_file, render_template
-from mega_helper import MegaHelper, MegaHelperError
+from mega_helper import MegaHelper, MegaHelperError, is_mega_public_url
 
 app = Flask(__name__)
 # Files are downloaded to and kept on the server here (override with
@@ -3221,10 +3221,7 @@ def _record_mega_link(upload):
 
 def _record_mega_link_locked(upload):
     public_url = str(upload.get("public_url") or "").strip()
-    parsed_url = urlparse(public_url)
-    mega_host = (parsed_url.hostname or "").lower()
-    if (parsed_url.scheme != "https"
-            or not (mega_host == "mega.nz" or mega_host.endswith(".mega.nz"))):
+    if not is_mega_public_url(public_url):
         raise ValueError("MEGA did not provide a valid public URL")
     name = str(upload.get("filename") or "")
     gid = str(upload.get("group_id") or "")

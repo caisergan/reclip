@@ -197,7 +197,8 @@ class ReClipApiTests(unittest.TestCase):
             thumb=str(thumb),
             group_id="",
         )
-        mega_url = "https://mega.nz/file/node-id#decryption-key"
+        # rclone may return MEGA's legacy but still official mega.co.nz host.
+        mega_url = "https://mega.co.nz/file/node-id#decryption-key"
         reclip._record_mega_link({
             "id": "mega-job-1",
             "filename": media.name,

@@ -6,7 +6,7 @@ import time
 import unittest
 from pathlib import Path
 
-from mega_helper import MegaHelper, MegaHelperError
+from mega_helper import MegaHelper, MegaHelperError, is_mega_public_url
 
 
 FAKE_RCLONE = r'''#!/usr/bin/env python3
@@ -48,7 +48,8 @@ if command == "link":
     if "link-fail" in destination and os.environ.get("FAKE_RCLONE_LINK_OK") != "1":
         print("public links temporarily unavailable", file=sys.stderr)
         raise SystemExit(1)
-    print("https://mega.nz/file/test-node#test-key")
+    # Current rclone/MEGA versions can return the legacy official host.
+    print("https://mega.co.nz/file/test-node#test-key")
     raise SystemExit(0)
 print("unsupported fake command", file=sys.stderr)
 raise SystemExit(2)
@@ -117,6 +118,12 @@ class MegaHelperTests(unittest.TestCase):
             time.sleep(0.02)
         self.fail("uploads did not finish")
 
+    def test_public_link_validation_accepts_both_official_mega_hosts(self):
+        self.assertTrue(is_mega_public_url("https://mega.nz/file/node#key"))
+        self.assertTrue(is_mega_public_url("https://mega.co.nz/#!node!key"))
+        self.assertFalse(is_mega_public_url("http://mega.co.nz/file/node#key"))
+        self.assertFalse(is_mega_public_url("https://mega.co.nz.example.com/file/node#key"))
+
     def test_account_password_is_not_stored_in_clear_text(self):
         account = self.helper.add_account("Primary", "one@example.com", "super-secret")
         self.assertEqual(account["quota"]["free"], 10 * 1024 * 1024)
@@ -137,7 +144,7 @@ class MegaHelperTests(unittest.TestCase):
         self.assertEqual({job["account_id"] for job in result["jobs"]}, {first["id"], second["id"]})
         jobs = self.wait_for_uploads()
         self.assertTrue(all(job["status"] == "done" for job in jobs))
-        self.assertTrue(all(job["public_url"].startswith("https://mega.nz/") for job in jobs))
+        self.assertTrue(all(job["public_url"].startswith("https://mega.co.nz/") for job in jobs))
         self.assertEqual(len(self.linked), 2)
         self.assertTrue(all(item["source_path"] for item in self.linked))
         grouped = next(job for job in jobs if job["filename"] == "large.mp4")
@@ -157,7 +164,7 @@ class MegaHelperTests(unittest.TestCase):
         os.environ["FAKE_RCLONE_LINK_OK"] = "1"
         retried = self.helper.create_public_link(job_id)
         self.assertEqual(retried["status"], "done")
-        self.assertEqual(retried["public_url"], "https://mega.nz/file/test-node#test-key")
+        self.assertEqual(retried["public_url"], "https://mega.co.nz/file/test-node#test-key")
         commands = self.command_log.read_text().splitlines()
         self.assertEqual(commands.count("copyto"), 1)
         self.assertEqual(commands.count("link"), 2)
