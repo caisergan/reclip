@@ -9,6 +9,7 @@ import signal
 import socket
 import ipaddress
 import shutil
+import shlex
 import subprocess
 import threading
 import time
@@ -1983,6 +1984,148 @@ def _attempt_download(job, job_id, cmd, timeout_msg):
     return True, tail
 
 
+# ---- Segmented parallel HTTP download --------------------------------------
+#
+# Some file hosts throttle *per connection* (a few hundred KB/s each) while
+# happily serving many parallel ranged streams. When a direct URL proves it
+# supports range requests, split the payload into segments fetched
+# concurrently and concatenate them into the staging .part file afterwards.
+
+SEGMENT_MIN_SIZE = 8 * 1024 * 1024    # below this a single stream is fine
+SEGMENT_MAX_COUNT = 8                 # throughput plateaus past ~8 connections
+SEGMENT_TARGET_SIZE = 4 * 1024 * 1024
+
+
+def _segmented_curl_download(job, part_path, media_url, referer):
+    """Download ``media_url`` as parallel ranged segments when possible.
+
+    Returns True when the file was fully staged into ``part_path``, False when
+    segmentation was attempted but failed (the caller should retry with its
+    plain single-stream path), and None when segmentation does not apply
+    (no/small file, no range support, or an existing .part to resume).
+
+    All segment curls run as background jobs of one ``bash -c`` supervisor
+    started with its own session, so ``kill_proc(job["proc"])`` — the normal
+    cancellation path — tears down every segment at once.
+    """
+    if os.path.exists(part_path) and os.path.getsize(part_path) > 0:
+        return None  # resuming a previous attempt: keep the single-stream path
+
+    # Probe: a 1-byte range GET proves range support and yields the post-
+    # redirect URL, so every segment hits storage directly.
+    probe = ["curl", "-sL", "--max-time", "20", "-A", USER_AGENT,
+             "-H", "Accept: */*", "-r", "0-0", "-o", os.devnull,
+             "--write-out", "%{http_code} %{url_effective}"]
+    if referer:
+        probe += ["-e", referer]
+    probe.append(media_url)
+    try:
+        out = subprocess.run(probe, capture_output=True, text=True,
+                             timeout=30).stdout.strip()
+        code, _, final_url = out.partition(" ")
+        final_url = final_url.strip()
+    except Exception:
+        return None
+    if code != "206" or not final_url.startswith("http"):
+        return None
+
+    head = ["curl", "-sIL", "--max-time", "20", "-A", USER_AGENT]
+    if referer:
+        head += ["-e", referer]
+    head.append(final_url)
+    try:
+        hdrs = subprocess.run(head, capture_output=True, text=True,
+                              timeout=30).stdout.lower()
+        total = int(re.findall(r"content-length:\s*(\d+)", hdrs)[-1])
+    except Exception:
+        return None
+    if total < SEGMENT_MIN_SIZE:
+        return None
+
+    count = max(2, min(SEGMENT_MAX_COUNT, total // SEGMENT_TARGET_SIZE + 1))
+    bounds = [i * total // count for i in range(count)] + [total]
+    segs = []
+    lines = []
+    for i in range(count):
+        seg = f"{part_path}.seg{i}"
+        segs.append(seg)
+        cmd = ["curl", "-sS", "--fail", "--max-time", str(DOWNLOAD_TIMEOUT),
+               "-A", USER_AGENT, "-H", "Accept: */*",
+               "-r", f"{bounds[i]}-{bounds[i + 1] - 1}",
+               "-o", seg]
+        if referer:
+            cmd += ["-e", referer]
+        cmd.append(final_url)
+        lines.append(" ".join(shlex.quote(part) for part in cmd) + f" & p{i}=$!")
+    for i in range(count):
+        lines.append(f"wait $p{i}; echo $? > {shlex.quote(segs[i] + '.rc')}")
+    script = "\n".join(lines)
+
+    job["status"] = "downloading"
+    job["progress"] = 0.0
+    started = time.monotonic()
+    proc = None
+    try:
+        proc = subprocess.Popen(["bash", "-c", script], stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, text=True,
+                                start_new_session=True)
+        job["proc"] = proc
+        prev = 0
+        prev_t = started
+        while True:
+            if job.get("cancelled"):
+                kill_proc(proc)
+                raise _Cancelled()
+            try:
+                proc.wait(timeout=0.5)
+                done = True
+            except subprocess.TimeoutExpired:
+                done = False
+            now = time.monotonic()
+            cur = sum(os.path.getsize(s) for s in segs if os.path.exists(s))
+            job["downloaded"] = _fmt_bytes(cur)
+            job["total_size"] = _fmt_bytes(total)
+            job["progress"] = min(round(cur / total * 100.0, 1), 100.0)
+            dt = now - prev_t
+            if dt >= 1:
+                speed = (cur - prev) / dt
+                if speed > 0:
+                    job["speed"] = f"{_fmt_bytes(int(speed))}/s"
+                    job["eta"] = f"{int((total - cur) / speed)}s"
+                else:
+                    job.pop("speed", None)
+                    job.pop("eta", None)
+                prev, prev_t = cur, now
+            if done:
+                break
+        ok = proc.returncode == 0 and all(
+            os.path.exists(s + ".rc") and os.path.getsize(s) == bounds[i + 1] - bounds[i]
+            for i, s in enumerate(segs))
+        rcs = [open(s + ".rc").read().strip() for s in segs if os.path.exists(s + ".rc")]
+        if not ok or len(rcs) != count or any(rc != "0" for rc in rcs):
+            return False
+        with open(part_path, "ab") as out_f:
+            for seg in segs:
+                with open(seg, "rb") as f:
+                    shutil.copyfileobj(f, out_f, 1024 * 1024)
+        job["downloaded"] = _fmt_bytes(total)
+        job["progress"] = 100.0
+        return True
+    except _Cancelled:
+        raise
+    except Exception:
+        return False
+    finally:
+        if proc is not None and proc.poll() is None:
+            kill_proc(proc)
+        for seg in segs:
+            for path in (seg, seg + ".rc"):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+
+
 def _attempt_direct(job, job_id, media_url, referer, timeout_msg):
     """Last-resort stream a resolved media URL directly via curl.
 
@@ -2004,6 +2147,10 @@ def _attempt_direct(job, job_id, media_url, referer, timeout_msg):
 
     staged = os.path.join(DOWNLOAD_DIR, f"{job_id}.mp4")
     part_path = staged + ".part"
+    # Throttled-per-connection hosts serve ranged segments in parallel far
+    # faster than one stream; None/False fall through to the plain path.
+    if _segmented_curl_download(job, part_path, media_url, referer) is True:
+        return True
     total = _media_total_size(media_url, referer=referer)
     started = time.monotonic()
     resume = os.path.getsize(part_path) if os.path.exists(part_path) else 0
@@ -2098,6 +2245,10 @@ def _attempt_plain_download(job, job_id, url, referer, filename, timeout_msg):
     ext = os.path.splitext(filename)[1].lower()
     staged = os.path.join(DOWNLOAD_DIR, f"{job_id}{ext or '.bin'}")
     part_path = staged + ".part"
+    # Same parallel-segment fast path as _attempt_direct; falls through when
+    # the host does not support ranges or a resume is already in progress.
+    if _segmented_curl_download(job, part_path, url, referer) is True:
+        return True
     total = _media_total_size(url, referer=referer)
     started = time.monotonic()
     resume = os.path.getsize(part_path) if os.path.exists(part_path) else 0
