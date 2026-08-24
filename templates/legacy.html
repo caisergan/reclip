@@ -824,7 +824,7 @@
       gap: 5px;
       flex-shrink: 0;
     }
-    .lib-dl, .lib-del, .lib-link {
+    .lib-dl, .lib-del, .lib-link, .lib-mega {
       border: 1px solid var(--card-border);
       background: var(--card);
       border-radius: 8px;
@@ -843,6 +843,10 @@
     .lib-del:hover { color: var(--error); border-color: var(--error); }
     .lib-link { color: var(--muted); }
     .lib-link:hover { color: #2563eb; border-color: #2563eb; }
+    .lib-mega { color: #d9272e; font-weight: 700; }
+    .lib-mega:hover { color: #fff; background: #d9272e; border-color: #d9272e; }
+    .lib-item.remote-only { background: rgba(217, 39, 46, 0.025); }
+    .lib-item-remote { display: inline-block; margin: 3px 0 0 4px; padding: 0 6px; border: 1px solid rgba(217,39,46,.28); border-radius: 999px; color: #b91c24; font-size: .6rem; }
 
     /* Group manager */
     .group-manager {
@@ -948,22 +952,22 @@
       align-items: center;
       justify-content: center;
     }
-    .lib-select input { accent-color: #d9272e; cursor: pointer; }
+    .lib-select input { accent-color: var(--accent); cursor: pointer; }
     .mega-selection {
       margin-top: 10px;
       display: flex;
       align-items: center;
       gap: 8px;
       padding: 8px 9px;
-      border: 1px solid rgba(217, 39, 46, 0.28);
+      border: 1px solid var(--card-border);
       border-radius: 9px;
-      background: rgba(217, 39, 46, 0.055);
+      background: var(--card);
       font-size: 0.68rem;
       color: var(--fg);
     }
     .mega-selection[hidden] { display: none; }
     .mega-selection span { flex: 1; }
-    .mega-selection button {
+    .mega-selection button, .mega-selection select {
       border: 1px solid var(--card-border);
       border-radius: 7px;
       background: var(--card);
@@ -973,6 +977,8 @@
       font-family: 'DM Mono', monospace;
       font-size: 0.64rem;
     }
+    .mega-selection select { max-width: 112px; color: var(--fg); }
+    .mega-selection button:disabled, .mega-selection select:disabled { opacity: .45; cursor: not-allowed; }
     .mega-selection .mega-send { color: #fff; border-color: #d9272e; background: #d9272e; }
     .mega-overlay {
       position: fixed;
@@ -1120,7 +1126,7 @@
     .mega-job-top { display: flex; align-items: center; gap: 7px; }
     .mega-job-name { min-width: 0; flex: 1; color: var(--fg); font-size: 0.67rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .mega-job-state { font-size: 0.57rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
-    .mega-job-state.uploading { color: #2563eb; }
+    .mega-job-state.uploading, .mega-job-state.linking { color: #2563eb; }
     .mega-job-state.done { color: var(--success); }
     .mega-job-state.error { color: var(--error); }
     .mega-job-fill { height: 100%; background: #2563eb; border-radius: inherit; transition: width 0.2s; }
@@ -1265,8 +1271,10 @@
       </div>
       <div class="mega-selection" id="megaSelection" hidden>
         <span id="megaSelectionCount">0 files selected</span>
+        <select id="libraryMoveTarget" aria-label="Move selected files to group"><option value="">Ungrouped</option></select>
+        <button id="libraryMoveBtn" onclick="moveSelectedLibrary()">Move</button>
+        <button id="libraryMegaBtn" class="mega-send" onclick="openMega()">Send to MEGA</button>
         <button onclick="clearMegaSelection()">Clear</button>
-        <button class="mega-send" onclick="openMega()">Send to MEGA</button>
       </div>
       <div class="library-list" id="libraryList">
         <div class="library-empty">No downloads yet</div>
@@ -1475,9 +1483,13 @@
       return JSON.stringify([file.group_id || '', file.filename || '']);
     }
 
-    function selectedMegaFiles() {
+    function selectedLibraryFiles() {
       const byKey = new Map(libraryData.map(file => [megaFileKey(file), file]));
       return [...megaSelected].map(key => byKey.get(key)).filter(Boolean);
+    }
+
+    function selectedMegaFiles() {
+      return selectedLibraryFiles().filter(file => file.local_available !== false);
     }
 
     function toggleMegaFile(checkbox) {
@@ -1494,7 +1506,8 @@
     }
 
     function renderMegaSelection() {
-      const files = selectedMegaFiles();
+      const files = selectedLibraryFiles();
+      const localFiles = selectedMegaFiles();
       const bar = document.getElementById('megaSelection');
       const count = document.getElementById('megaSelectionCount');
       if (bar) bar.hidden = files.length === 0;
@@ -1504,13 +1517,61 @@
       }
       const summary = document.getElementById('megaSelectedSummary');
       if (summary) {
-        const total = files.reduce((sum, file) => sum + Number(file.size || 0), 0);
-        summary.textContent = files.length
-          ? `${files.length} file selected (${fmtSizeJS(total)}). Automatic mode distributes them according to current free storage.`
-          : 'No files selected. Select files from the Downloads panel first.';
+        const total = localFiles.reduce((sum, file) => sum + Number(file.size || 0), 0);
+        summary.textContent = localFiles.length
+          ? `${localFiles.length} file selected (${fmtSizeJS(total)}). Automatic mode distributes them according to current free storage.`
+          : 'No local files selected. Select files from the Downloads panel first.';
       }
       const upload = document.getElementById('megaUploadBtn');
-      if (upload) upload.disabled = files.length === 0;
+      if (upload) upload.disabled = localFiles.length === 0;
+      const mega = document.getElementById('libraryMegaBtn');
+      if (mega) {
+        mega.disabled = !files.length || localFiles.length !== files.length;
+        mega.title = localFiles.length !== files.length ? 'Local copy required for MEGA upload' : '';
+      }
+      const move = document.getElementById('libraryMoveBtn');
+      if (move) move.disabled = files.length === 0;
+    }
+
+    async function moveSelectedLibrary() {
+      const files = selectedLibraryFiles();
+      if (!files.length) return;
+      const button = document.getElementById('libraryMoveBtn');
+      const target = document.getElementById('libraryMoveTarget');
+      if (button) { button.disabled = true; button.textContent = 'Moving…'; }
+      if (target) target.disabled = true;
+      try {
+        const response = await fetch('/api/library/group', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            files: files.map(file => ({ filename: file.filename, group_id: file.group_id || '' })),
+            target_group_id: target ? target.value : '',
+          }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.error || 'Move failed');
+        megaSelected.clear();
+        await refreshLibrary();
+        await refreshGroups();
+      } catch (error) {
+        alert(error.message || 'Move failed');
+      } finally {
+        if (button) { button.disabled = false; button.textContent = 'Move'; }
+        if (target) target.disabled = false;
+        renderMegaSelection();
+      }
+    }
+
+    function moveOneLibrary(encodedKey) {
+      let key = '';
+      try { key = decodeURIComponent(encodedKey || ''); } catch { return; }
+      megaSelected.clear();
+      megaSelected.add(key);
+      renderMegaSelection();
+      renderLibrary();
+      const target = document.getElementById('libraryMoveTarget');
+      if (target) target.focus();
     }
 
     function setMegaStatus(id, message, error = false) {
@@ -1713,14 +1774,19 @@
       if (megaPollTimer) clearTimeout(megaPollTimer);
       megaPollTimer = null;
       try {
-        const data = await megaApi('/uploads?limit=100');
+        const data = await megaApi('/uploads?limit=300');
         megaUploads = data.uploads || [];
+        const needsRefresh = megaUploads.some(job => job.public_url && !libraryData.some(file =>
+          megaFileKey(file) === JSON.stringify([job.group_id || '', job.filename || '']) &&
+          file.mega_url === job.public_url
+        ));
+        if (needsRefresh) await refreshLibrary();
         renderMegaJobs();
       } catch (error) {
         setMegaStatus('megaUploadStatus', error.message, true);
         return;
       }
-      if (megaUploads.some(job => ['queued', 'uploading'].includes(job.status))) {
+      if (megaUploads.some(job => ['queued', 'uploading', 'linking'].includes(job.status))) {
         megaPollTimer = setTimeout(loadMegaJobs, 1200);
       }
     }
@@ -1732,22 +1798,25 @@
         list.innerHTML = '<div class="mega-empty">No MEGA uploads yet.</div>';
         return;
       }
-      const labels = { queued: 'queued', uploading: 'uploading', done: 'done', error: 'error', cancelled: 'cancelled' };
+      const labels = { queued: 'queued', uploading: 'uploading', linking: 'creating link', done: 'done', error: 'error', cancelled: 'cancelled' };
       list.innerHTML = megaUploads.map(job => {
-        const active = ['queued', 'uploading'].includes(job.status);
+        const cancellable = ['queued', 'uploading'].includes(job.status);
+        const retryable = (!job.public_url && job.status === 'done') ||
+          (job.remote_uploaded && job.status === 'error');
         const progress = Math.min(100, Math.max(0, Number(job.progress || 0)));
         const transfer = job.status === 'uploading'
           ? `${fmtSizeJS(job.uploaded_bytes)} / ${fmtSizeJS(job.size)}${job.speed ? ' · ' + fmtSizeJS(job.speed) + '/s' : ''}${job.eta != null ? ' · ETA ' + fmtEtaMega(job.eta) : ''}`
-          : fmtSizeJS(job.size);
+          : job.status === 'linking' ? 'Creating public MEGA link…' : fmtSizeJS(job.size);
         return `<div class="mega-job ${job.status || ''}">
           <div class="mega-job-top">
             <span class="mega-job-name" title="${escAttr(job.filename || '')}">${esc(job.filename || 'Unknown file')}</span>
             <span class="mega-job-state ${job.status || ''}">${labels[job.status] || esc(job.status || '')}</span>
-            ${active ? `<button class="mega-account-del" title="Cancel upload" onclick="cancelMegaUpload('${job.id}')">×</button>` : ''}
+            ${cancellable ? `<button class="mega-account-del" title="Cancel upload" onclick="cancelMegaUpload('${job.id}')">×</button>` : ''}
           </div>
           <div class="mega-job-track" style="margin-top:7px"><div class="mega-job-fill" style="width:${progress}%"></div></div>
           <div class="mega-job-meta">${esc(job.account_label || '')} · ${esc(transfer)}<br>/${esc(job.remote_path || '')}</div>
           ${job.error ? `<div class="mega-job-error">${esc(job.error)}</div>` : ''}
+          ${job.public_url || retryable ? `<div style="display:flex;gap:6px;margin-top:7px">${job.public_url ? `<button class="mega-small-btn" onclick="openMegaLibraryLink('${encodeURIComponent(job.public_url)}')">Open in MEGA</button>` : ''}${retryable ? `<button class="mega-small-btn" onclick="retryMegaLink('${job.id}')">Retry link</button>` : ''}</div>` : ''}
         </div>`;
       }).join('');
     }
@@ -1759,12 +1828,29 @@
       return `${minutes}m ${seconds % 60}s`;
     }
 
+    function openMegaLibraryLink(encodedUrl) {
+      const url = decodeURIComponent(encodedUrl || '');
+      if (url) window.open(url, '_blank', 'noopener,noreferrer');
+    }
+
     async function cancelMegaUpload(id) {
       try {
         await megaApi('/uploads/' + encodeURIComponent(id) + '/cancel', { method: 'POST' });
         await loadMegaJobs();
       } catch (error) {
         setMegaStatus('megaUploadStatus', error.message, true);
+      }
+    }
+
+    async function retryMegaLink(id) {
+      setMegaStatus('megaUploadStatus', 'Creating the public MEGA link…');
+      try {
+        await megaApi('/uploads/' + encodeURIComponent(id) + '/link', { method: 'POST' });
+        await Promise.all([loadMegaJobs(), refreshLibrary()]);
+        setMegaStatus('megaUploadStatus', 'MEGA link saved.');
+      } catch (error) {
+        setMegaStatus('megaUploadStatus', error.message, true);
+        await loadMegaJobs();
       }
     }
 
@@ -1888,14 +1974,14 @@
       list.innerHTML = items.map(f => {
         const name = f.title || f.filename || 'Unknown';
         const site = libHost(f.url);
-        const href = `/api/library/download?f=${encodeURIComponent(f.filename || '')}`;
-        const thumbUrl = f.has_thumb ? `/api/library/thumb?f=${encodeURIComponent(f.filename || '')}` : '';
+        const href = `/api/library/download?f=${encodeURIComponent(f.filename || '')}&group_id=${encodeURIComponent(f.group_id || '')}`;
+        const thumbUrl = f.has_thumb ? `/api/library/thumb?f=${encodeURIComponent(f.filename || '')}&group_id=${encodeURIComponent(f.group_id || '')}` : '';
         const meta = [fmtSizeJS(f.size), fmtDurJS(f.duration), fmtDateJS(f.created_at || f.mtime)].filter(Boolean).join(' · ');
         const megaKey = megaFileKey(f);
         const megaDataKey = encodeURIComponent(megaKey);
         return `
-          <div class="lib-item">
-            <label class="lib-select" title="Select for MEGA upload">
+          <div class="lib-item${f.local_available === false ? ' remote-only' : ''}">
+            <label class="lib-select" title="${megaSelected.has(megaKey) ? 'Deselect' : 'Select'} library item">
               <input type="checkbox" data-key="${megaDataKey}" ${megaSelected.has(megaKey) ? 'checked' : ''} onchange="toggleMegaFile(this)">
             </label>
             <div class="lib-item-thumb">
@@ -1905,12 +1991,15 @@
               <span class="lib-item-name">${esc(name)}</span>
               ${site ? `<span class="lib-item-site">${esc(site)}</span>` : ''}
               ${f.group_name ? `<span class="lib-item-grp">${esc(f.group_name)}</span>` : ''}
+              ${f.local_available === false ? '<span class="lib-item-remote">MEGA only</span>' : ''}
               <span class="lib-item-meta">${esc(meta)}</span>
             </div>
             <div class="lib-item-actions">
-              ${f.url ? `<a class="lib-link" href="${esc(f.url)}" target="_blank" rel="noopener noreferrer" title="Open source page">↗</a>` : ''}
-              <a class="lib-dl" href="${href}" download title="Download">↓</a>
-              <button class="lib-del" title="Delete" data-name="${esc(f.filename || '')}" onclick="deleteLibraryFile(this)">×</button>
+              <button class="lib-link" title="Move to another group" onclick="moveOneLibrary('${megaDataKey}')">⇥</button>
+              ${f.url ? `<a class="lib-link" href="${escAttr(f.url)}" target="_blank" rel="noopener noreferrer" title="Open source page">↗</a>` : ''}
+              ${f.mega_url ? `<a class="lib-mega" href="${escAttr(f.mega_url)}" target="_blank" rel="noopener noreferrer" title="Open in MEGA">M</a>` : ''}
+              ${f.local_available === false ? '' : `<a class="lib-dl" href="${href}" download title="Download local file">↓</a>
+              <button class="lib-del" title="${f.mega_url ? 'Delete local copy' : 'Delete'}" data-name="${escAttr(f.filename || '')}" data-group="${escAttr(f.group_id || '')}" data-mega="${f.mega_url ? '1' : '0'}" onclick="deleteLibraryFile(this)">×</button>`}
             </div>
           </div>`;
       }).join('');
@@ -1919,16 +2008,25 @@
 
     async function deleteLibraryFile(btn) {
       const name = btn.dataset.name;
+      const groupId = btn.dataset.group || '';
       if (!name) return;
-      if (!confirm(`Delete \"${name}\" from the server?`)) return;
+      const message = btn.dataset.mega === '1'
+        ? `Delete the local copy of \"${name}\"?\nThe MEGA file and its link will be kept.`
+        : `Delete \"${name}\" from the server?`;
+      if (!confirm(message)) return;
       try {
-        await fetch('/api/library/delete', {
+        const response = await fetch('/api/library/delete', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ f: name }),
+          body: JSON.stringify({ f: name, group_id: groupId }),
         });
-      } catch {}
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.error || 'Delete failed');
+      } catch (error) {
+        alert(error.message || 'Delete failed');
+      }
       await refreshLibrary();
+      await refreshGroups();
     }
 
     // ---------- Groups ----------
@@ -1960,6 +2058,14 @@
         try { if (!want) want = localStorage.getItem('reclip_group') || ''; } catch {}
         if ([...dl.options].some(o => o.value === want)) dl.value = want;
         selectedGroup = dl.value;
+      }
+
+      const moveTarget = document.getElementById('libraryMoveTarget');
+      if (moveTarget) {
+        const current = moveTarget.value || '';
+        moveTarget.innerHTML = `<option value="">Ungrouped</option>` + allGroups
+          .map(g => `<option value="${esc(g.id)}">${esc(g.name)}</option>`).join('');
+        if ([...moveTarget.options].some(o => o.value === current)) moveTarget.value = current;
       }
 
       // library filter select

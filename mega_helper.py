@@ -1,9 +1,9 @@
 """Multi-account MEGA storage and upload plugin for ReClip.
 
-The plugin deliberately exposes only account administration and local -> MEGA
-uploads.  It does not expose arbitrary local paths or remote download/delete
-operations.  rclone's MEGA backend is used for authentication, storage quota
-queries and transfers.
+The plugin deliberately exposes only account administration, local -> MEGA
+uploads, and public-link creation for those uploads. It does not expose
+arbitrary local paths or remote download/delete operations. rclone's MEGA
+backend is used for authentication, storage quota queries, transfers and links.
 """
 
 from __future__ import annotations
@@ -20,14 +20,17 @@ import time
 import uuid
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from typing import Callable, Iterable
+from urllib.parse import urlsplit
 
 from flask import Blueprint, jsonify, request
 
 
 ACCOUNT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{2,47}$")
 EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
-ACTIVE_STATES = {"queued", "uploading"}
+TRANSFER_STATES = {"queued", "uploading"}
+ACTIVE_STATES = {*TRANSFER_STATES, "linking"}
 FINAL_STATES = {"done", "error", "cancelled"}
 
 
@@ -49,6 +52,8 @@ class MegaHelper:
         state_dir: str | None = None,
         rclone_bin: str | None = None,
         max_workers: int | None = None,
+        on_link_ready: Callable[[dict], None] | None = None,
+        operation_lock: object | None = None,
     ) -> None:
         self.download_dir = os.path.realpath(download_dir)
         self.file_resolver = file_resolver
@@ -58,6 +63,8 @@ class MegaHelper:
             or os.path.join(self.download_dir, ".mega")
         )
         self.rclone_bin = rclone_bin or os.environ.get("RECLIP_RCLONE", "rclone")
+        self.on_link_ready = on_link_ready
+        self.operation_lock = operation_lock or nullcontext()
         self.max_workers = max(
             1,
             min(int(max_workers or os.environ.get("RECLIP_MEGA_CONCURRENT", "2")), 8),
@@ -142,8 +149,12 @@ class MegaHelper:
             if not isinstance(item, dict) or not item.get("id"):
                 continue
             if item.get("status") in ACTIVE_STATES:
-                item["status"] = "error"
-                item["error"] = "Upload was interrupted when ReClip restarted"
+                if item.get("public_url"):
+                    item["status"] = "done"
+                    item["error"] = None
+                else:
+                    item["status"] = "error"
+                    item["error"] = "Upload was interrupted when ReClip restarted"
                 item["finished_at"] = now
             self._jobs[item["id"]] = item
         self._prune_jobs_locked()
@@ -345,7 +356,7 @@ class MegaHelper:
     def _reserved_locked(self) -> dict[str, int]:
         result: dict[str, int] = {}
         for job in self._jobs.values():
-            if job.get("status") in ACTIVE_STATES:
+            if job.get("status") in TRANSFER_STATES:
                 account_id = job.get("account_id")
                 result[account_id] = result.get(account_id, 0) + int(job.get("size") or 0)
         return result
@@ -556,6 +567,25 @@ class MegaHelper:
         folder: str = "ReClip",
         preserve_groups: bool = True,
     ) -> dict:
+        # Keep source resolution and job registration atomic with ReClip's
+        # library moves/deletes. Either the upload claims the old identity or a
+        # concurrent request must resolve the new one.
+        with self.operation_lock:
+            return self._enqueue_locked(
+                selection,
+                account_id=account_id,
+                folder=folder,
+                preserve_groups=preserve_groups,
+            )
+
+    def _enqueue_locked(
+        self,
+        selection: object,
+        *,
+        account_id: str = "auto",
+        folder: str = "ReClip",
+        preserve_groups: bool = True,
+    ) -> dict:
         self._ensure_available()
         files = self._resolve_selection(selection)
         folder = self._remote_folder(folder)
@@ -638,6 +668,9 @@ class MegaHelper:
                     "started_at": None,
                     "finished_at": None,
                     "cancel_requested": False,
+                    "remote_uploaded": False,
+                    "public_url": None,
+                    "link_error": None,
                     "_source": item["path"],
                     "_remote": account["remote"],
                     "_process": None,
@@ -664,6 +697,160 @@ class MegaHelper:
                 self._jobs.values(), key=lambda item: item.get("created_at", 0), reverse=True
             )
             return [self._public_job(job) for job in ordered[: max(1, min(limit, 300))]]
+
+    @staticmethod
+    def _validated_public_url(output: str) -> str:
+        lines = [line.strip() for line in (output or "").splitlines() if line.strip()]
+        if not lines:
+            raise MegaHelperError("MEGA did not return a public link", 502)
+        value = lines[-1]
+        parsed = urlsplit(value)
+        host = (parsed.hostname or "").lower()
+        if parsed.scheme != "https" or not (host == "mega.nz" or host.endswith(".mega.nz")):
+            raise MegaHelperError("MEGA returned an invalid public link", 502)
+        return value
+
+    def _link_callback_payload(self, job: dict) -> dict:
+        payload = self._public_job(job)
+        payload["source_path"] = job.get("_source")
+        return payload
+
+    def _notify_link_ready(self, job: dict) -> None:
+        if self.on_link_ready:
+            self.on_link_ready(self._link_callback_payload(job))
+
+    def reconcile_links(self) -> int:
+        """Re-apply retained public links to the owning library after startup."""
+        if not self.on_link_ready:
+            return 0
+        with self._lock:
+            jobs = [dict(job) for job in self._jobs.values() if job.get("public_url")]
+        restored = 0
+        for job in jobs:
+            try:
+                self._notify_link_ready(job)
+                restored += 1
+            except Exception:
+                # A missing historical library row must not prevent startup.
+                continue
+        return restored
+
+    def has_active_upload(self, filename: str, group_id: str = "") -> bool:
+        with self._lock:
+            return any(
+                job.get("status") in ACTIVE_STATES
+                and (job.get("filename") or "") == filename
+                and (job.get("group_id") or "") == (group_id or "")
+                for job in self._jobs.values()
+            )
+
+    def _finish_link_error(self, job_id: str, message: str) -> None:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job:
+                return
+            job["status"] = "error"
+            job["remote_uploaded"] = True
+            job["link_error"] = message[:1000]
+            job["error"] = message[:1000]
+            job["finished_at"] = time.time()
+            job["speed"] = 0.0
+            job["eta"] = None
+            self._save_jobs_locked()
+
+    def create_public_link(self, job_id: str) -> dict:
+        """Create and persist the public URL for an already-uploaded MEGA object."""
+        self._ensure_available()
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job:
+                raise MegaHelperError("Upload not found", 404)
+            status = job.get("status")
+            if status in TRANSFER_STATES:
+                raise MegaHelperError("Wait for the MEGA upload to finish", 409)
+            if status == "cancelled" or not (
+                job.get("remote_uploaded") or status == "done" or status == "linking"
+            ):
+                raise MegaHelperError("The file has not been uploaded to MEGA", 409)
+            account = self._accounts.get(job.get("account_id"))
+            remote = job.get("_remote") or (account or {}).get("remote")
+            if not remote:
+                raise MegaHelperError(
+                    "The MEGA account is no longer configured, so its link cannot be created",
+                    409,
+                )
+            destination = f"{remote}:{job['remote_path']}"
+            job["status"] = "linking"
+            job["error"] = None
+            job["link_error"] = None
+            job["finished_at"] = None
+            self._save_jobs_locked()
+
+        try:
+            proc = self._rclone_command(
+                [
+                    "link",
+                    destination,
+                    "--config",
+                    self.rclone_config,
+                    "--contimeout",
+                    "20s",
+                    "--timeout",
+                    "30s",
+                ],
+                timeout=60,
+            )
+        except MegaHelperError as exc:
+            message = (
+                "Upload completed, but the public link could not be created: "
+                + exc.message
+            )
+            self._finish_link_error(job_id, message)
+            raise MegaHelperError(message, exc.status) from exc
+        if proc.returncode != 0:
+            message = "Upload completed, but the public link could not be created: " + self._last_error(
+                proc, "MEGA link command failed"
+            )
+            self._finish_link_error(job_id, message)
+            raise MegaHelperError(message, 502)
+        try:
+            public_url = self._validated_public_url(proc.stdout)
+        except MegaHelperError as exc:
+            message = f"Upload completed, but the public link could not be created: {exc.message}"
+            self._finish_link_error(job_id, message)
+            raise MegaHelperError(message, exc.status) from exc
+
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job:
+                raise MegaHelperError("Upload not found", 404)
+            job["public_url"] = public_url
+            job["remote_uploaded"] = True
+            job["uploaded_at"] = job.get("uploaded_at") or time.time()
+            self._save_jobs_locked()
+            callback_job = dict(job)
+
+        try:
+            self._notify_link_ready(callback_job)
+        except Exception as exc:
+            message = (
+                "The MEGA link was created, but ReClip could not save it for the video: "
+                + (str(exc) or exc.__class__.__name__)
+            )
+            self._finish_link_error(job_id, message)
+            raise MegaHelperError(message, 500) from exc
+
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job:
+                raise MegaHelperError("Upload not found", 404)
+            job["status"] = "done"
+            job["progress"] = 100.0
+            job["error"] = None
+            job["link_error"] = None
+            job["finished_at"] = time.time()
+            self._save_jobs_locked()
+            return self._public_job(job)
 
     def _run_upload(self, job_id: str) -> None:
         with self._lock:
@@ -755,6 +942,7 @@ class MegaHelper:
 
             process.stdout.close()
             returncode = process.wait()
+            should_link = False
             with self._lock:
                 live = self._jobs.get(job_id)
                 if not live:
@@ -762,27 +950,38 @@ class MegaHelper:
                 if live.get("cancel_requested"):
                     live["status"] = "cancelled"
                     live["error"] = None
+                    live["finished_at"] = time.time()
                 elif returncode == 0:
-                    live["status"] = "done"
+                    live["status"] = "linking"
                     live["progress"] = 100.0
+                    live["remote_uploaded"] = True
+                    live["uploaded_at"] = time.time()
                     # A sub-second upload may finish before the first stats tick.
                     if not live.get("uploaded_bytes"):
                         live["uploaded_bytes"] = live["size"]
                     live["error"] = None
+                    live["finished_at"] = None
                     quota = self._quota_cache.get(live["account_id"])
                     if quota and isinstance(quota.get("free"), int):
                         moved = min(live["size"], int(live.get("uploaded_bytes") or 0))
                         quota["used"] = int(quota.get("used") or 0) + moved
                         quota["free"] = max(0, quota["free"] - moved)
+                    should_link = True
                 else:
                     live["status"] = "error"
                     live["error"] = "\n".join(errors) or f"rclone exited with code {returncode}"
+                    live["finished_at"] = time.time()
                     self._quota_cache.pop(live["account_id"], None)
                 live["speed"] = 0.0
                 live["eta"] = None
-                live["finished_at"] = time.time()
                 live["_process"] = None
                 self._save_jobs_locked()
+            if should_link:
+                try:
+                    self.create_public_link(job_id)
+                except MegaHelperError:
+                    # create_public_link persists a user-visible link error.
+                    pass
         except FileNotFoundError:
             self._finish_with_error(job_id, "rclone is not installed")
         except Exception as exc:  # worker errors must become visible in the UI
@@ -830,6 +1029,8 @@ class MegaHelper:
                 raise MegaHelperError("Upload not found", 404)
             if job.get("status") in FINAL_STATES:
                 return self._public_job(job)
+            if job.get("status") == "linking":
+                raise MegaHelperError("The upload is already creating its MEGA link", 409)
             job["cancel_requested"] = True
             future = job.get("_future")
             process = job.get("_process")
@@ -926,6 +1127,10 @@ class MegaHelper:
         @bp.route("/uploads/<job_id>/cancel", methods=["POST"])
         def cancel_upload(job_id: str):
             return jsonify(self.cancel(job_id))
+
+        @bp.route("/uploads/<job_id>/link", methods=["POST"])
+        def create_upload_link(job_id: str):
+            return jsonify(self.create_public_link(job_id))
 
         @bp.route("/uploads/finished", methods=["DELETE"])
         def clear_uploads():
