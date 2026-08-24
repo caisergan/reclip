@@ -340,6 +340,7 @@
   .lib-item:hover{border-color:var(--border-strong); box-shadow:var(--shadow-card)}
   .lib-item:focus-visible{outline:none; border-color:var(--focus); box-shadow:0 0 0 3px rgba(91,99,232,.10)}
   .lib-item.mega-selected{border-color:rgba(217,39,46,0.40); background:rgba(217,39,46,0.035); box-shadow:inset 3px 0 0 #D9272E}
+  .lib-item.remote-only{cursor:default; background:var(--bg-subtle)}
   .lib-thumb{width:108px; min-width:108px; height:64px; border-radius:8px; overflow:hidden; background:#EDEDEF; display:flex; align-items:center; justify-content:center; flex-shrink:0; border:1px solid var(--border-soft, var(--border)); position:relative}
   .lib-thumb .badge-mega{position:absolute; left:6px; top:6px; width:20px; height:20px; display:inline-flex; align-items:center; justify-content:center; color:#D9272E; border:2px solid rgba(255,255,255,.92); border-radius:50%; background:#fff; box-shadow:0 2px 7px rgba(17,24,39,.16)}
   .lib-thumb .badge-mega svg{width:16px;height:16px;display:block}
@@ -352,6 +353,7 @@
   .tag{font-size:10px; font-weight:600; font-family:'JetBrains Mono', monospace; padding:2px 6px; border-radius:999px; border:1px solid var(--border); background:var(--card); color:var(--muted); max-width:110px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; transition:all .14s}
   .tag:hover{border-color:var(--fg); color:var(--fg); background:var(--bg-muted)}
   .tag.accent{color:var(--fg); border-color:var(--border-strong); background:var(--card)}
+  .tag.mega-only{color:#B91C24; border-color:rgba(217,39,46,.28); background:rgba(217,39,46,.06); cursor:default}
   .lib-meta{font-size:10.5px; font-family:'JetBrains Mono', monospace; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:flex; gap:6px; flex-wrap:wrap; align-items:center}
   .lib-meta .dot{width:2px;height:2px;border-radius:50%;background:var(--muted-2);display:inline-block}
   .lib-meta b{color:var(--fg); font-weight:600}
@@ -361,6 +363,9 @@
   .lib-btn svg{width:15px;height:15px;position:static;transform:none}
   .lib-btn:hover{border-color:var(--accent); color:var(--fg)}
   .lib-btn.dl:hover{background:var(--accent); color:#fff; border-color:var(--accent)}
+  .lib-btn.mega{color:#D9272E}
+  .lib-btn.mega:hover{background:#D9272E; color:#fff; border-color:#D9272E}
+  .lib-btn.disabled{opacity:.38; cursor:not-allowed; pointer-events:none}
   .lib-empty{padding:28px 16px; text-align:center; color:var(--muted); font-size:13px; display:flex; flex-direction:column; align-items:center; gap:8px}
   .lib-empty svg{width:28px;height:28px; color:var(--muted-2)}
   /* Group manager dropdown */
@@ -449,11 +454,13 @@
   .mega-job-top{display:flex; align-items:center; gap:7px}
   .mega-job-name{min-width:0; flex:1; color:var(--fg); font-size:10.5px; font-weight:500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
   .mega-job-state{font:600 9px 'JetBrains Mono',monospace; text-transform:uppercase; letter-spacing:.04em; color:var(--muted)}
-  .mega-job-state.uploading{color:#4F56D8}.mega-job-state.done{color:#15803D}.mega-job-state.error{color:#B4232A}
+  .mega-job-state.uploading,.mega-job-state.linking{color:#4F56D8}.mega-job-state.done{color:#15803D}.mega-job-state.error{color:#B4232A}
   .mega-job-fill{height:100%; background:#5B63E8; border-radius:inherit; transition:width .2s}
   .mega-job.done .mega-job-fill{background:#22A35A}
   .mega-job-meta,.mega-job-error{margin-top:5px; color:var(--muted); font:400 9.5px/1.45 'JetBrains Mono',monospace; overflow-wrap:anywhere}
   .mega-job-error{color:#B4232A}
+  .mega-job-actions{display:flex; gap:6px; margin-top:7px}
+  .mega-job-actions .mega-small-btn{padding:5px 8px; color:#D9272E; border-color:rgba(217,39,46,.28); text-decoration:none}
   .mega-empty{color:var(--muted); text-align:center; font-size:10.5px; padding:18px 5px}
   /* Overall */
   .overall{
@@ -1353,24 +1360,11 @@ const megaSelected=new Set();
 let megaAccounts=[];
 let megaUploads=[];
 let megaPollTimer=null;
-let megaSavedKeys=new Set();
 const MEGA_ICON_PATH='M12 0C5.372 0 0 5.372 0 12s5.372 12 12 12 12-5.372 12-12S18.628 0 12 0zm6.23 16.244a.371.371 0 0 1-.373.372H16.29a.371.371 0 0 1-.372-.372v-4.828c0-.04-.046-.06-.08-.033l-3.32 3.32a.742.742 0 0 1-1.043 0l-3.32-3.32c-.027-.027-.08-.007-.08.033v4.828a.371.371 0 0 1-.372.372H6.136a.371.371 0 0 1-.372-.372V7.757c0-.206.166-.372.372-.372h1.076a.75.75 0 0 1 .525.22l4.13 4.13a.18.18 0 0 0 .26 0l4.13-4.13c.14-.14.325-.22.525-.22h1.075c.206 0 .372.166.372.372z';
-try{megaSavedKeys=new Set(JSON.parse(localStorage.getItem('reclip_mega_saved')||'[]'));}catch{}
 function megaFileKey(file){ return JSON.stringify([file.group_id||'',file.filename||'']); }
-function syncMegaSavedKeys(jobs,rerender=true){
-  const before=megaSavedKeys.size;
-  (jobs||[]).filter(job=>job.status==='done').forEach(job=>megaSavedKeys.add(JSON.stringify([job.group_id||'',job.filename||''])));
-  try{localStorage.setItem('reclip_mega_saved',JSON.stringify([...megaSavedKeys]));}catch{}
-  if(rerender&&megaSavedKeys.size!==before) filterLib();
-}
-async function loadMegaBadgeStatus(){
-  if(location.protocol==='file:') return;
-  try{const data=await megaApi('/uploads?limit=300');syncMegaSavedKeys(data.uploads||[]);}
-  catch{}
-}
 function selectedMegaFiles(){
   const byKey=new Map(libData.map(file=>[megaFileKey(file),file]));
-  return [...megaSelected].map(key=>byKey.get(key)).filter(Boolean);
+  return [...megaSelected].map(key=>byKey.get(key)).filter(file=>file&&file.local_available!==false);
 }
 function toggleMegaCard(encodedKey,event){
   if(event?.target?.closest('button,a,.lib-thumb')) return;
@@ -1379,12 +1373,14 @@ function toggleMegaCard(encodedKey,event){
     event.preventDefault();
   }
   let key=''; try{key=decodeURIComponent(encodedKey);}catch{return;}
+  const file=libData.find(item=>megaFileKey(item)===key);
+  if(!file||file.local_available===false){toast('This video is stored on MEGA only.');return;}
   if(megaSelected.has(key)) megaSelected.delete(key); else megaSelected.add(key);
   renderMegaSelection();
   filterLib();
 }
 function clearMegaSelection(){megaSelected.clear();renderMegaSelection();filterLib();}
-function filteredMegaKeys(){return [...new Set(filteredData.map(megaFileKey))];}
+function filteredMegaKeys(){return [...new Set(filteredData.filter(file=>file.local_available!==false).map(megaFileKey))];}
 function syncMegaSelectAllButton(){
   const button=document.getElementById('megaSelectAllBtn');
   if(!button)return;
@@ -1450,7 +1446,7 @@ function normalizeLibraryFile(file){
     dur:formatLibraryDuration(file.duration),
     ext,
     date:formatLibraryDate(createdAt),
-    thumb:file.has_thumb?`/api/library/thumb?f=${encodeURIComponent(filename)}`:'',
+    thumb:file.has_thumb?`/api/library/thumb?f=${encodeURIComponent(filename)}&group_id=${encodeURIComponent(file.group_id||'')}`:'',
     type:audio?'audio':'video',
     createdAt,
     isDemo:false,
@@ -1463,7 +1459,7 @@ async function refreshLibrary(showToast=false){
     if(!response.ok) throw new Error('Downloads could not be loaded');
     const data=await response.json();
     libData=(data.files||[]).map(normalizeLibraryFile);
-    const validKeys=new Set(libData.map(megaFileKey));
+    const validKeys=new Set(libData.filter(file=>file.local_available!==false).map(megaFileKey));
     [...megaSelected].forEach(key=>{if(!validKeys.has(key))megaSelected.delete(key);});
     filterLib(); renderMegaSelection();
     if(showToast) toast('Downloads refreshed');
@@ -1473,17 +1469,25 @@ async function refreshLibrary(showToast=false){
 }
 function openLibraryFile(encodedUrl){
   const url=decodeURIComponent(encodedUrl||'');
-  if(url) window.open(url,'_blank','noopener'); else toast('No source URL available');
+  if(url) window.open(url,'_blank','noopener,noreferrer'); else toast('No source URL available');
 }
-async function deleteLibraryFile(encodedFilename,isDemo=false){
+function openMegaLink(encodedUrl){
+  const url=decodeURIComponent(encodedUrl||'');
+  if(url) window.open(url,'_blank','noopener,noreferrer'); else toast('No MEGA link available');
+}
+async function deleteLibraryFile(encodedFilename,encodedGroupId,hasMega=false,isDemo=false){
   const filename=decodeURIComponent(encodedFilename||'');
+  const groupId=decodeURIComponent(encodedGroupId||'');
   if(isDemo){toast('Delete requires the ReClip server');return;}
-  if(!filename||!confirm(`Delete "${filename}" from the server?`)) return;
+  const message=hasMega
+    ? `Delete the local copy of "${filename}"?\nThe MEGA file and its link will be kept.`
+    : `Delete "${filename}" from the server?`;
+  if(!filename||!confirm(message)) return;
   try{
-    const response=await fetch('/api/library/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({f:filename})});
+    const response=await fetch('/api/library/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({f:filename,group_id:groupId})});
     const data=await response.json().catch(()=>({}));
     if(!response.ok) throw new Error(data.error||'Delete failed');
-    await refreshLibrary();
+    await Promise.all([refreshLibrary(),refreshGroups()]);
   }catch(error){toast(error.message);}
 }
 function filterByTag(kind,encodedValue){
@@ -1505,10 +1509,12 @@ function renderLib(list){
   const detailEl=document.getElementById('libCountDetail');
   const sumLeft=document.getElementById('libSummaryLeft');
   const sumRight=document.getElementById('libSummaryRight');
-  const totalAll=totalBytes(libData),totalFiltered=totalBytes(list),durFiltered=totalDuration(list);
+  const totalAll=totalBytes(libData.filter(file=>file.local_available!==false));
+  const totalFiltered=totalBytes(list.filter(file=>file.local_available!==false));
+  const durFiltered=totalDuration(list);
   cnt.textContent=libData.length;
   totalEl.textContent=fmtBytes(totalFiltered);
-  totalEl.title=list.length===libData.length?`Total of all files: ${fmtBytes(totalAll)}`:`Filtered: ${fmtBytes(totalFiltered)} of ${fmtBytes(totalAll)}`;
+  totalEl.title=list.length===libData.length?`Local files: ${fmtBytes(totalAll)}`:`Filtered local files: ${fmtBytes(totalFiltered)} of ${fmtBytes(totalAll)}`;
   if(list.length!==libData.length){detailEl.style.display='';detailEl.textContent=`${list.length} shown`;totalEl.style.background='var(--accent)';totalEl.style.color='#fff';totalEl.style.borderColor='var(--accent)';}
   else{detailEl.style.display='none';totalEl.style.background='';totalEl.style.color='';totalEl.style.borderColor='';}
   if(sumLeft){
@@ -1519,13 +1525,17 @@ function renderLib(list){
   wrap.innerHTML=list.map(file=>{
     const thumb=file.thumb?`<img src="${escAttr(file.thumb)}" alt="" loading="lazy">`:`<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="m9 8 7 4-7 4V8Z"/></svg>`;
     const ext=(file.ext||'file').toUpperCase();
-    const key=megaFileKey(file),encodedKey=encodeURIComponent(key),selected=megaSelected.has(key);
-    const megaBadge=megaSavedKeys.has(key)?`<span class="badge-mega" title="Saved to MEGA"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="${MEGA_ICON_PATH}"/></svg></span>`:'';
+    const selectable=file.local_available!==false;
+    const key=megaFileKey(file),encodedKey=encodeURIComponent(key),selected=selectable&&megaSelected.has(key);
+    const megaBadge=file.mega_url?`<span class="badge-mega" title="Saved to MEGA"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="${MEGA_ICON_PATH}"/></svg></span>`:'';
     const openUrl=encodeURIComponent(file.url||'');
+    const megaUrl=encodeURIComponent(file.mega_url||'');
     const filename=encodeURIComponent(file.filename||file.name||'');
-    const downloadHref=file.isDemo?'#':`/api/library/download?f=${encodeURIComponent(file.filename||'')}`;
-    const downloadClick=file.isDemo?`event.preventDefault();toast('Redownload requires the ReClip server')`:'';
-    return `<div class="lib-item${selected?' mega-selected':''}" role="button" tabindex="0" aria-pressed="${selected}" aria-label="${selected?'Deselect':'Select'} ${escAttr(file.name)} for MEGA" onclick="toggleMegaCard('${encodedKey}',event)" onkeydown="toggleMegaCard('${encodedKey}',event)">
+    const groupId=encodeURIComponent(file.group_id||'');
+    const downloadHref=file.isDemo?'#':`/api/library/download?f=${encodeURIComponent(file.filename||'')}&group_id=${encodeURIComponent(file.group_id||'')}`;
+    const downloadClick=file.isDemo?`event.preventDefault();toast('Download requires the ReClip server')`:'';
+    const selectAttrs=selectable?` role="button" tabindex="0" aria-pressed="${selected}" aria-label="${selected?'Deselect':'Select'} ${escAttr(file.name)} for MEGA" onclick="toggleMegaCard('${encodedKey}',event)" onkeydown="toggleMegaCard('${encodedKey}',event)"`:'';
+    return `<div class="lib-item${selected?' mega-selected':''}${selectable?'':' remote-only'}"${selectAttrs}>
       <div class="lib-thumb" onclick="event.stopPropagation();openLibraryFile('${openUrl}')" title="Open source">${thumb}${megaBadge}</div>
       <div class="lib-main">
         <div class="lib-name" title="${escAttr(file.name)}">${esc(file.name)}</div>
@@ -1534,14 +1544,16 @@ function renderLib(list){
             ${file.site?`<button class="tag accent" onclick="event.stopPropagation();filterByTag('site','${encodeURIComponent(file.site)}')" title="Show ${escAttr(file.site)} downloads">${esc(file.site)}</button>`:''}
             ${file.group?`<button class="tag" onclick="event.stopPropagation();filterByTag('group','${encodeURIComponent(file.group_id)}')" title="Show ${escAttr(file.group)} group">${esc(file.group)}</button>`:''}
             <button class="tag" onclick="event.stopPropagation();filterByTag('format','${encodeURIComponent(file.ext)}')" title="Show ${escAttr(ext)} files">${esc(ext)}</button>
+            ${selectable?'':'<span class="tag mega-only">MEGA only</span>'}
           </div>
           <div class="lib-acts">
-            <a class="lib-btn dl" href="${downloadHref}" download onclick="event.stopPropagation();${downloadClick}" title="Redownload" aria-label="Redownload ${escAttr(file.name)}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v11"/><path d="m8 10 4 4 4-4"/><path d="M5 18v2h14v-2"/></svg></a>
-            <button class="lib-btn" onclick="event.stopPropagation();deleteLibraryFile('${filename}',${file.isDemo?'true':'false'})" title="Delete" aria-label="Delete ${escAttr(file.name)}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="m9 9 6 6M15 9l-6 6"/></svg></button>
+            ${file.mega_url?`<button class="lib-btn mega" onclick="event.stopPropagation();openMegaLink('${megaUrl}')" title="Open in MEGA" aria-label="Open ${escAttr(file.name)} in MEGA"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="${MEGA_ICON_PATH}"/></svg></button>`:''}
+            ${selectable?`<a class="lib-btn dl" href="${downloadHref}" download onclick="event.stopPropagation();${downloadClick}" title="Download local file" aria-label="Download ${escAttr(file.name)}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v11"/><path d="m8 10 4 4 4-4"/><path d="M5 18v2h14v-2"/></svg></a>`:''}
+            ${selectable?`<button class="lib-btn" onclick="event.stopPropagation();deleteLibraryFile('${filename}','${groupId}',${file.mega_url?'true':'false'},${file.isDemo?'true':'false'})" title="${file.mega_url?'Delete local copy':'Delete'}" aria-label="Delete ${escAttr(file.name)}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="m9 9 6 6M15 9l-6 6"/></svg></button>`:''}
           </div>
         </div>
         <div class="lib-meta"><b>${esc(file.size)}</b>${file.res&&file.res!=='—'?`<span class="dot"></span>${esc(file.res)}`:''}${file.dur&&file.dur!=='—'?`<span class="dot"></span>${esc(file.dur)}`:''}</div>
-        <div class="lib-sub">${esc(file.date||file.filename||'')}</div>
+        <div class="lib-sub">${esc(file.date||file.filename||'')}${selectable?'':' · stored on MEGA'}</div>
       </div>
     </div>`;
   }).join('');
@@ -1681,25 +1693,37 @@ async function startMegaUpload(event){
 }
 async function loadMegaJobs(){
   if(megaPollTimer) clearTimeout(megaPollTimer); megaPollTimer=null;
-  try{const data=await megaApi('/uploads?limit=300');megaUploads=data.uploads||[];syncMegaSavedKeys(megaUploads);renderMegaJobs();}
-  catch(error){setMegaStatus('megaUploadStatus',error.message,true);return;}
-  if(megaUploads.some(job=>['queued','uploading'].includes(job.status))) megaPollTimer=setTimeout(loadMegaJobs,1200);
+  try{
+    const data=await megaApi('/uploads?limit=300');
+    megaUploads=data.uploads||[];
+    const needsLibraryRefresh=megaUploads.some(job=>job.public_url&&!libData.some(file=>megaFileKey(file)===JSON.stringify([job.group_id||'',job.filename||''])&&file.mega_url===job.public_url));
+    if(needsLibraryRefresh) await refreshLibrary();
+    renderMegaJobs();
+  }catch(error){setMegaStatus('megaUploadStatus',error.message,true);return;}
+  if(megaUploads.some(job=>['queued','uploading','linking'].includes(job.status))) megaPollTimer=setTimeout(loadMegaJobs,1200);
 }
 function renderMegaJobs(){
   const list=document.getElementById('megaJobList'); if(!list) return;
   if(!megaUploads.length){list.innerHTML='<div class="mega-empty">No MEGA uploads yet.</div>';return;}
-  const labels={queued:'queued',uploading:'uploading',done:'done',error:'error',cancelled:'cancelled'};
+  const labels={queued:'queued',uploading:'uploading',linking:'creating link',done:'done',error:'error',cancelled:'cancelled'};
   list.innerHTML=megaUploads.map(job=>{
-    const active=['queued','uploading'].includes(job.status);
+    const cancellable=['queued','uploading'].includes(job.status);
+    const retryable=job.remote_uploaded&&job.status==='error';
     const progress=Math.min(100,Math.max(0,Number(job.progress)||0));
-    const transfer=job.status==='uploading'?`${fmtBytes(job.uploaded_bytes)} / ${fmtBytes(job.size)}${job.speed?' · '+fmtBytes(job.speed)+'/s':''}${job.eta!=null?' · ETA '+fmtEtaMega(job.eta):''}`:fmtBytes(job.size);
-    return `<div class="mega-job ${job.status||''}"><div class="mega-job-top"><span class="mega-job-name" title="${escAttr(job.filename||'')}">${esc(job.filename||'Unknown file')}</span><span class="mega-job-state ${job.status||''}">${labels[job.status]||esc(job.status||'')}</span>${active?`<button class="mega-account-del" type="button" title="Cancel upload" onclick="cancelMegaUpload('${job.id}')">×</button>`:''}</div><div class="mega-job-track" style="margin-top:7px"><div class="mega-job-fill" style="width:${progress}%"></div></div><div class="mega-job-meta">${esc(job.account_label||'')} · ${esc(transfer)}<br>/${esc(job.remote_path||'')}</div>${job.error?`<div class="mega-job-error">${esc(job.error)}</div>`:''}</div>`;
+    const transfer=job.status==='uploading'?`${fmtBytes(job.uploaded_bytes)} / ${fmtBytes(job.size)}${job.speed?' · '+fmtBytes(job.speed)+'/s':''}${job.eta!=null?' · ETA '+fmtEtaMega(job.eta):''}`:job.status==='linking'?'Creating public MEGA link…':fmtBytes(job.size);
+    const actions=job.public_url||retryable?`<div class="mega-job-actions">${job.public_url?`<button class="mega-small-btn" type="button" onclick="openMegaLink('${encodeURIComponent(job.public_url)}')">Open in MEGA</button>`:''}${retryable?`<button class="mega-small-btn" type="button" onclick="retryMegaLink('${job.id}')">Retry link</button>`:''}</div>`:'';
+    return `<div class="mega-job ${job.status||''}"><div class="mega-job-top"><span class="mega-job-name" title="${escAttr(job.filename||'')}">${esc(job.filename||'Unknown file')}</span><span class="mega-job-state ${job.status||''}">${labels[job.status]||esc(job.status||'')}</span>${cancellable?`<button class="mega-account-del" type="button" title="Cancel upload" onclick="cancelMegaUpload('${job.id}')">×</button>`:''}</div><div class="mega-job-track" style="margin-top:7px"><div class="mega-job-fill" style="width:${progress}%"></div></div><div class="mega-job-meta">${esc(job.account_label||'')} · ${esc(transfer)}<br>/${esc(job.remote_path||'')}</div>${job.error?`<div class="mega-job-error">${esc(job.error)}</div>`:''}${actions}</div>`;
   }).join('');
 }
 function fmtEtaMega(seconds){seconds=Math.max(0,Math.round(Number(seconds)||0));if(seconds<60)return`${seconds}s`;const minutes=Math.floor(seconds/60);return`${minutes}m ${seconds%60}s`;}
 async function cancelMegaUpload(id){
   try{await megaApi('/uploads/'+encodeURIComponent(id)+'/cancel',{method:'POST'});await loadMegaJobs();}
   catch(error){setMegaStatus('megaUploadStatus',error.message,true);}
+}
+async function retryMegaLink(id){
+  setMegaStatus('megaUploadStatus','Creating the public MEGA link…');
+  try{await megaApi('/uploads/'+encodeURIComponent(id)+'/link',{method:'POST'});await Promise.all([loadMegaJobs(),refreshLibrary()]);setMegaStatus('megaUploadStatus','MEGA link saved.');}
+  catch(error){setMegaStatus('megaUploadStatus',error.message,true);await loadMegaJobs();}
 }
 async function clearMegaFinished(){
   try{await megaApi('/uploads/finished',{method:'DELETE'});await loadMegaJobs();}
@@ -1727,7 +1751,6 @@ try{
 }catch{}
 refreshLibrary();
 refreshGroups();
-loadMegaBadgeStatus();
 loadDownloaderConfig();
 restoreBackendState();
 updateCount();updateGoLabel();renderCards();

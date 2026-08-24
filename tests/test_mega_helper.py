@@ -16,6 +16,10 @@ import sys
 
 args = sys.argv[1:]
 command = args[0] if args else ""
+log_path = os.environ.get("FAKE_RCLONE_LOG")
+if log_path:
+    with open(log_path, "a", encoding="utf-8") as handle:
+        handle.write(command + "\n")
 if command == "version":
     print("rclone v-test")
     raise SystemExit(0)
@@ -39,6 +43,13 @@ if command == "copyto":
         "stats": {"bytes": size, "totalBytes": size, "speed": 1024, "eta": 0},
     }), flush=True)
     raise SystemExit(0)
+if command == "link":
+    destination = args[1]
+    if "link-fail" in destination and os.environ.get("FAKE_RCLONE_LINK_OK") != "1":
+        print("public links temporarily unavailable", file=sys.stderr)
+        raise SystemExit(1)
+    print("https://mega.nz/file/test-node#test-key")
+    raise SystemExit(0)
 print("unsupported fake command", file=sys.stderr)
 raise SystemExit(2)
 '''
@@ -54,6 +65,10 @@ class MegaHelperTests(unittest.TestCase):
         self.fake.write_text(FAKE_RCLONE)
         self.fake.chmod(self.fake.stat().st_mode | stat.S_IXUSR)
         self.files = {}
+        self.linked = []
+        self.command_log = root / "rclone.log"
+        os.environ["FAKE_RCLONE_LOG"] = str(self.command_log)
+        os.environ.pop("FAKE_RCLONE_LINK_OK", None)
 
         def resolve(selection):
             result = []
@@ -74,11 +89,14 @@ class MegaHelperTests(unittest.TestCase):
             state_dir=str(root / "state"),
             rclone_bin=str(self.fake),
             max_workers=2,
+            on_link_ready=self.linked.append,
         )
         self.helper.safety_bytes = 0
 
     def tearDown(self):
         self.helper._pool.shutdown(wait=True, cancel_futures=True)
+        os.environ.pop("FAKE_RCLONE_LOG", None)
+        os.environ.pop("FAKE_RCLONE_LINK_OK", None)
         self.temp.cleanup()
 
     def add_file(self, name, size, group_id=""):
@@ -94,7 +112,7 @@ class MegaHelperTests(unittest.TestCase):
         deadline = time.time() + 5
         while time.time() < deadline:
             jobs = self.helper.public_jobs()
-            if jobs and all(job["status"] not in {"queued", "uploading"} for job in jobs):
+            if jobs and all(job["status"] not in {"queued", "uploading", "linking"} for job in jobs):
                 return jobs
             time.sleep(0.02)
         self.fail("uploads did not finish")
@@ -119,8 +137,53 @@ class MegaHelperTests(unittest.TestCase):
         self.assertEqual({job["account_id"] for job in result["jobs"]}, {first["id"], second["id"]})
         jobs = self.wait_for_uploads()
         self.assertTrue(all(job["status"] == "done" for job in jobs))
+        self.assertTrue(all(job["public_url"].startswith("https://mega.nz/") for job in jobs))
+        self.assertEqual(len(self.linked), 2)
+        self.assertTrue(all(item["source_path"] for item in self.linked))
         grouped = next(job for job in jobs if job["filename"] == "large.mp4")
         self.assertEqual(grouped["remote_path"], "ReClip/Group A/large.mp4")
+
+    def test_link_failure_can_be_retried_without_uploading_again(self):
+        self.helper.add_account("Only", "only@example.com", "secret")
+        selection = [self.add_file("link-fail.mp4", 1024)]
+        result = self.helper.enqueue(selection)
+        job_id = result["jobs"][0]["id"]
+        jobs = self.wait_for_uploads()
+        self.assertEqual(jobs[0]["status"], "error")
+        self.assertTrue(jobs[0]["remote_uploaded"])
+        self.assertIsNone(jobs[0]["public_url"])
+        self.assertIn("Upload completed", jobs[0]["error"])
+
+        os.environ["FAKE_RCLONE_LINK_OK"] = "1"
+        retried = self.helper.create_public_link(job_id)
+        self.assertEqual(retried["status"], "done")
+        self.assertEqual(retried["public_url"], "https://mega.nz/file/test-node#test-key")
+        commands = self.command_log.read_text().splitlines()
+        self.assertEqual(commands.count("copyto"), 1)
+        self.assertEqual(commands.count("link"), 2)
+
+    def test_public_url_survives_helper_reload_and_reconciles(self):
+        self.helper.add_account("Only", "only@example.com", "secret")
+        self.helper.enqueue([self.add_file("persisted.mp4", 1024)])
+        jobs = self.wait_for_uploads()
+        self.assertEqual(jobs[0]["status"], "done")
+
+        restored_links = []
+        second = MegaHelper(
+            str(self.downloads),
+            self.helper.file_resolver,
+            state_dir=self.helper.state_dir,
+            rclone_bin=str(self.fake),
+            max_workers=1,
+            on_link_ready=restored_links.append,
+        )
+        try:
+            restored = second.public_jobs()[0]
+            self.assertEqual(restored["public_url"], jobs[0]["public_url"])
+            self.assertEqual(second.reconcile_links(), 1)
+            self.assertEqual(restored_links[0]["filename"], "persisted.mp4")
+        finally:
+            second._pool.shutdown(wait=True, cancel_futures=True)
 
     def test_enqueue_rejects_selection_that_exceeds_every_account(self):
         self.helper.add_account("Only", "only@example.com", "secret")

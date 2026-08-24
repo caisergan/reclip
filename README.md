@@ -18,6 +18,7 @@ https://github.com/user-attachments/assets/419d3e50-c933-444b-8cab-a9724986ba05
 - Automatic URL deduplication
 - Multi-account MEGA helper with storage quota checks and transfer progress
 - Automatic distribution of selected files across MEGA accounts by free space
+- Persistent public MEGA links and remote-only library records after local deletion
 - Clean, responsive UI — no frameworks, no build step
 - Modular Flask backend with persistent download and upload history
 
@@ -66,6 +67,10 @@ The previous interface remains available at **http://localhost:8899/legacy**.
    storage, or choose one account explicitly.
 5. Set the destination folder and queue the upload. Progress, speed, ETA, errors
    and cancellation are available in the same panel.
+6. After the transfer, ReClip creates and saves a public MEGA link. Use **Open in
+   MEGA** from either the transfer row or Downloads card.
+7. Deleting a MEGA-backed item removes only its local media file. The card stays
+   visible as **MEGA only**, and ReClip does not delete or unlink the remote file.
 
 Account metadata and the dedicated rclone config are persisted in
 `<download-dir>/.mega`. Files are written with owner-only permissions. rclone
@@ -76,6 +81,10 @@ authentication and HTTPS.
 The quota shown by the plugin is the **MEGA storage quota** (`total`, `used`,
 `free`). MEGA/rclone does not provide a reliable account download-transfer
 allowance to this integration, so the UI does not invent or estimate that value.
+
+MEGA can create a public link only after the remote object exists, so a completed
+transfer briefly enters a **creating link** state. Public links contain the
+capability needed to access and decrypt their files; treat them as sensitive.
 
 Optional settings:
 

@@ -1,4 +1,5 @@
 import os
+import shutil
 import tempfile
 import threading
 import time
@@ -30,6 +31,9 @@ class ReClipApiTests(unittest.TestCase):
             reclip.download_index.clear()
         with reclip.groups_lock:
             reclip.groups.clear()
+        with reclip.mega_helper._lock:
+            reclip.mega_helper._jobs.clear()
+            reclip.mega_helper._save_jobs_locked()
         with reclip._db_lock:
             conn = reclip._db_connect()
             try:
@@ -44,6 +48,8 @@ class ReClipApiTests(unittest.TestCase):
                 continue
             if path.is_file():
                 path.unlink()
+            elif path.is_dir():
+                shutil.rmtree(path)
 
     def test_overhaul_is_index_and_legacy_ui_remains_available(self):
         root = self.client.get("/")
@@ -149,6 +155,190 @@ class ReClipApiTests(unittest.TestCase):
                 "video-1", "youtube", item["url"], "video", "1080"
             )
         )
+
+    def test_mega_link_survives_local_delete_transfer_clear_and_reload(self):
+        media = _DOWNLOAD_DIR / "linked.mp4"
+        media.write_bytes(b"linked video bytes")
+        thumb = _DOWNLOAD_DIR / "linked.jpg"
+        thumb.write_bytes(b"thumbnail")
+        reclip.register_download(
+            "linked-1",
+            "youtube",
+            "Linked video",
+            "https://example.test/watch/linked",
+            "video",
+            "1080",
+            str(media),
+            duration=42,
+            thumb=str(thumb),
+            group_id="",
+        )
+        mega_url = "https://mega.nz/file/node-id#decryption-key"
+        reclip._record_mega_link({
+            "id": "mega-job-1",
+            "filename": media.name,
+            "group_id": "",
+            "source_path": str(media),
+            "size": media.stat().st_size,
+            "public_url": mega_url,
+            "remote_path": "ReClip/linked.mp4",
+            "account_id": "primary-account",
+            "account_label": "Primary",
+            "uploaded_at": time.time(),
+        })
+        with reclip.mega_helper._lock:
+            reclip.mega_helper._jobs["mega-job-1"] = {
+                "id": "mega-job-1", "status": "done", "created_at": time.time()
+            }
+
+        before = self.client.get("/api/library").get_json()["files"][0]
+        self.assertTrue(before["local_available"])
+        self.assertEqual(before["mega_url"], mega_url)
+        self.assertTrue(before["has_thumb"])
+
+        cleared = self.client.delete("/api/mega/uploads/finished")
+        self.assertEqual(cleared.status_code, 200)
+        self.assertEqual(
+            self.client.get("/api/library").get_json()["files"][0]["mega_url"],
+            mega_url,
+        )
+
+        deleted = self.client.post(
+            "/api/library/delete", json={"f": media.name, "group_id": ""}
+        )
+        self.assertEqual(deleted.status_code, 200)
+        self.assertTrue(deleted.get_json()["record_retained"])
+        self.assertFalse(media.exists())
+        self.assertTrue(thumb.exists())
+
+        reclip.load_index()
+        remote = self.client.get("/api/library").get_json()["files"][0]
+        self.assertFalse(remote["local_available"])
+        self.assertEqual(remote["mega_url"], mega_url)
+        self.assertEqual(remote["size"], len(b"linked video bytes"))
+        self.assertTrue(remote["has_thumb"])
+        self.assertIsNotNone(remote["local_deleted_at"])
+        self.assertIsNone(reclip.find_existing_download(
+            "linked-1", "youtube", "https://example.test/watch/linked", "video", "1080"
+        ))
+        self.assertTrue(reclip.download_index, "remote-only dedup rows must not be pruned")
+        with self.assertRaises(reclip.MegaHelperError):
+            reclip._resolve_mega_files([{"filename": media.name, "group_id": ""}])
+
+    def test_unlinked_library_delete_still_removes_the_record(self):
+        media = _DOWNLOAD_DIR / "local-only.mp4"
+        media.write_bytes(b"local only")
+        reclip.register_download(
+            "local-1", "youtube", "Local", "https://example.test/local",
+            "video", "720", str(media),
+        )
+        response = self.client.post(
+            "/api/library/delete", json={"f": media.name, "group_id": ""}
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.get_json()["record_retained"])
+        self.assertFalse(media.exists())
+        self.assertEqual(reclip.download_index, {})
+        self.assertEqual(self.client.get("/api/library").get_json()["files"], [])
+
+    def test_library_delete_is_group_specific_and_blocks_active_mega_upload(self):
+        first_dir = _DOWNLOAD_DIR / "group-a"
+        second_dir = _DOWNLOAD_DIR / "group-b"
+        first_dir.mkdir()
+        second_dir.mkdir()
+        first = first_dir / "same.mp4"
+        second = second_dir / "same.mp4"
+        first.write_bytes(b"first")
+        second.write_bytes(b"second")
+        reclip.register_download(
+            "same-a", "youtube", "First", "https://example.test/a",
+            "video", "best", str(first), group_id="group-a",
+        )
+        reclip.register_download(
+            "same-b", "youtube", "Second", "https://example.test/b",
+            "video", "best", str(second), group_id="group-b",
+        )
+        with patch.object(reclip.mega_helper, "has_active_upload", return_value=True):
+            blocked = self.client.post(
+                "/api/library/delete", json={"f": "same.mp4", "group_id": "group-a"}
+            )
+        self.assertEqual(blocked.status_code, 409)
+        self.assertTrue(first.exists())
+
+        deleted = self.client.post(
+            "/api/library/delete", json={"f": "same.mp4", "group_id": "group-a"}
+        )
+        self.assertEqual(deleted.status_code, 200)
+        self.assertFalse(first.exists())
+        self.assertTrue(second.exists())
+        files = self.client.get("/api/library").get_json()["files"]
+        self.assertEqual([(item["group_id"], item["filename"]) for item in files],
+                         [("group-b", "same.mp4")])
+
+    def test_download_schema_contains_persistent_mega_fields(self):
+        with reclip._db_lock:
+            conn = reclip._db_connect()
+            try:
+                columns = {row[1] for row in conn.execute("PRAGMA table_info(downloads)")}
+            finally:
+                conn.close()
+        expected = {
+            "size_bytes", "local_deleted_at", "mega_url", "mega_remote_path",
+            "mega_account_id", "mega_account_label", "mega_uploaded_at",
+        }
+        self.assertTrue(expected.issubset(columns))
+
+        old_db = _DOWNLOAD_DIR / "old-schema.db"
+        conn = reclip.sqlite3.connect(old_db)
+        try:
+            conn.execute(
+                "CREATE TABLE downloads (key TEXT PRIMARY KEY, file TEXT NOT NULL, "
+                "filename TEXT, title TEXT, url TEXT, extractor TEXT, video_id TEXT, "
+                "created_at REAL)"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        with patch.object(reclip, "DB_PATH", str(old_db)):
+            reclip._init_db()
+        conn = reclip.sqlite3.connect(old_db)
+        try:
+            migrated = {row[1] for row in conn.execute("PRAGMA table_info(downloads)")}
+        finally:
+            conn.close()
+        self.assertTrue(expected.issubset(migrated))
+
+    def test_remote_only_item_becomes_ungrouped_when_group_is_deleted(self):
+        gid = "archive"
+        folder = _DOWNLOAD_DIR / gid
+        folder.mkdir()
+        media = folder / "remote.mp4"
+        media.write_bytes(b"remote")
+        with reclip.groups_lock:
+            reclip.groups[gid] = {"name": "Archive", "created_at": time.time()}
+            reclip._save_groups_locked()
+        reclip.register_download(
+            "remote-group", "youtube", "Remote", "https://example.test/remote",
+            "video", "best", str(media), group_id=gid,
+        )
+        reclip._record_mega_link({
+            "filename": media.name,
+            "group_id": gid,
+            "source_path": str(media),
+            "size": media.stat().st_size,
+            "public_url": "https://mega.nz/file/group-node#group-key",
+            "remote_path": "ReClip/Archive/remote.mp4",
+            "account_id": "primary",
+            "account_label": "Primary",
+            "uploaded_at": time.time(),
+        })
+        self.client.post("/api/library/delete", json={"f": media.name, "group_id": gid})
+        response = self.client.delete(f"/api/groups/{gid}")
+        self.assertEqual(response.status_code, 200)
+        item = self.client.get("/api/library").get_json()["files"][0]
+        self.assertEqual(item["group_id"], "")
+        self.assertFalse(item["local_available"])
+        self.assertTrue(item["mega_url"].startswith("https://mega.nz/"))
 
     def test_config_endpoint_updates_concurrency(self):
         original = reclip.gate.limit

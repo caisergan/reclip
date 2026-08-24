@@ -1079,7 +1079,14 @@ CREATE TABLE IF NOT EXISTS downloads (
   created_at REAL,
   duration   REAL,
   thumb      TEXT,
-  group_id   TEXT
+  group_id   TEXT,
+  size_bytes INTEGER,
+  local_deleted_at REAL,
+  mega_url TEXT,
+  mega_remote_path TEXT,
+  mega_account_id TEXT,
+  mega_account_label TEXT,
+  mega_uploaded_at REAL
 );
 CREATE TABLE IF NOT EXISTS groups (
   id         TEXT PRIMARY KEY,
@@ -1115,6 +1122,18 @@ def _init_db():
                 conn.execute("ALTER TABLE downloads ADD COLUMN thumb TEXT")
             if "group_id" not in cols:
                 conn.execute("ALTER TABLE downloads ADD COLUMN group_id TEXT")
+            download_migrations = {
+                "size_bytes": "INTEGER",
+                "local_deleted_at": "REAL",
+                "mega_url": "TEXT",
+                "mega_remote_path": "TEXT",
+                "mega_account_id": "TEXT",
+                "mega_account_label": "TEXT",
+                "mega_uploaded_at": "REAL",
+            }
+            for column, kind in download_migrations.items():
+                if column not in cols:
+                    conn.execute(f"ALTER TABLE downloads ADD COLUMN {column} {kind}")
             fb_cols = [r[1] for r in conn.execute("PRAGMA table_info(fetch_batches)")]
             if "kind" not in fb_cols:
                 conn.execute("ALTER TABLE fetch_batches ADD COLUMN kind TEXT DEFAULT 'video'")
@@ -1135,7 +1154,10 @@ def _init_db():
                         with conn:
                             conn.executemany(
                                 "INSERT OR REPLACE INTO downloads "
-                                "VALUES (?,?,?,?,?,?,?,?,?,?,?)", rows)
+                                "(key,file,filename,title,url,extractor,video_id,created_at,"
+                                "duration,thumb,group_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                                rows,
+                            )
                         imported = True
                 except (OSError, ValueError):
                     pass
@@ -1149,7 +1171,11 @@ def _init_db():
 
 
 def _row_to_entry(row):
-    _key, file_, filename, title, url, extractor, video_id, created_at, duration, thumb, group_id = row
+    (
+        _key, file_, filename, title, url, extractor, video_id, created_at,
+        duration, thumb, group_id, size_bytes, local_deleted_at, mega_url,
+        mega_remote_path, mega_account_id, mega_account_label, mega_uploaded_at,
+    ) = row
     return {
         "file": file_,
         "filename": filename or os.path.basename(file_),
@@ -1161,6 +1187,13 @@ def _row_to_entry(row):
         "duration": duration or None,
         "thumb": thumb or None,
         "group_id": group_id or None,
+        "size_bytes": size_bytes,
+        "local_deleted_at": local_deleted_at or None,
+        "mega_url": mega_url or None,
+        "mega_remote_path": mega_remote_path or None,
+        "mega_account_id": mega_account_id or None,
+        "mega_account_label": mega_account_label or None,
+        "mega_uploaded_at": mega_uploaded_at or None,
     }
 
 
@@ -1172,7 +1205,9 @@ def load_index():
             conn = _db_connect()
             try:
                 for row in conn.execute(
-                    "SELECT key,file,filename,title,url,extractor,video_id,created_at,duration,thumb,group_id "
+                    "SELECT key,file,filename,title,url,extractor,video_id,created_at,"
+                    "duration,thumb,group_id,size_bytes,local_deleted_at,mega_url,"
+                    "mega_remote_path,mega_account_id,mega_account_label,mega_uploaded_at "
                     "FROM downloads"):
                     data[row[0]] = _row_to_entry(row)
             finally:
@@ -1182,7 +1217,7 @@ def load_index():
     download_index = data
 
 
-def _save_index_locked():
+def _save_index_locked(strict=False):
     """Persist the whole dedup index to SQLite (called while holding index_lock)."""
     try:
         with _db_lock:
@@ -1192,16 +1227,24 @@ def _save_index_locked():
                 with conn:
                     conn.execute("DELETE FROM downloads")
                     conn.executemany(
-                        "INSERT INTO downloads VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                        "INSERT INTO downloads "
+                        "(key,file,filename,title,url,extractor,video_id,created_at,"
+                        "duration,thumb,group_id,size_bytes,local_deleted_at,mega_url,"
+                        "mega_remote_path,mega_account_id,mega_account_label,mega_uploaded_at) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         [(k, e.get("file", ""), e.get("filename"), e.get("title"),
                           e.get("url"), e.get("extractor"), e.get("video_id"),
                           e.get("created_at") or now, e.get("duration"), e.get("thumb"),
-                          e.get("group_id"))
+                          e.get("group_id"), e.get("size_bytes"),
+                          e.get("local_deleted_at"), e.get("mega_url"),
+                          e.get("mega_remote_path"), e.get("mega_account_id"),
+                          e.get("mega_account_label"), e.get("mega_uploaded_at"))
                          for k, e in download_index.items()])
             finally:
                 conn.close()
     except Exception:
-        pass
+        if strict:
+            raise
 
 
 # ---- Download groups ------------------------------------------------------
@@ -1315,6 +1358,9 @@ def find_existing_download(video_id, extractor, url, format_choice, format_id):
             path = entry.get("file")
             if path and os.path.exists(path):
                 return dict(entry)
+            if entry.get("mega_url"):
+                # A remote-only item stays in history but is not a local dedup hit.
+                continue
             download_index.pop(key, None)  # stale: file removed out-of-band
             removed = True
         if removed:
@@ -1393,11 +1439,32 @@ def register_download(video_id, extractor, title, url, format_choice, format_id,
     keys = _dedup_keys(video_id, extractor, url, format_choice, format_id)
     if not keys:
         return
-    entry = {"file": path, "filename": os.path.basename(path), "title": title,
-             "url": url, "extractor": extractor, "video_id": video_id,
-             "created_at": time.time(), "duration": duration, "thumb": thumb,
-             "group_id": group_id}
+    try:
+        size_bytes = os.path.getsize(path)
+    except OSError:
+        size_bytes = None
     with index_lock:
+        previous = next((download_index.get(key) for key in keys
+                         if download_index.get(key)), None) or {}
+        entry = {
+            "file": path,
+            "filename": os.path.basename(path),
+            "title": title,
+            "url": url,
+            "extractor": extractor,
+            "video_id": video_id,
+            "created_at": previous.get("created_at") or time.time(),
+            "duration": duration if duration is not None else previous.get("duration"),
+            "thumb": thumb or previous.get("thumb"),
+            "group_id": group_id,
+            "size_bytes": size_bytes if size_bytes is not None else previous.get("size_bytes"),
+            "local_deleted_at": None,
+            "mega_url": previous.get("mega_url"),
+            "mega_remote_path": previous.get("mega_remote_path"),
+            "mega_account_id": previous.get("mega_account_id"),
+            "mega_account_label": previous.get("mega_account_label"),
+            "mega_uploaded_at": previous.get("mega_uploaded_at"),
+        }
         for key in keys:
             download_index[key] = entry
         _save_index_locked()
@@ -1412,6 +1479,53 @@ def unregister_download(path):
             download_index.pop(key, None)
         if stale:
             _save_index_locked()
+
+
+def _library_identity_for_path(path):
+    with index_lock:
+        entry = next((value for value in download_index.values()
+                      if value.get("file") == path), None)
+        if not entry:
+            return os.path.basename(path), ""
+        return (entry.get("filename") or os.path.basename(path),
+                entry.get("group_id") or "")
+
+
+def _mega_upload_active(filename, group_id=""):
+    helper = globals().get("mega_helper")
+    return bool(helper and helper.has_active_upload(filename, group_id))
+
+
+def _remove_local_library_file(path):
+    """Remove a local media file, retaining its index rows when MEGA-backed."""
+    if not path:
+        return False
+    try:
+        size_bytes = os.path.getsize(path)
+    except OSError:
+        size_bytes = None
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
+
+    with index_lock:
+        matching = [key for key, entry in download_index.items()
+                    if entry.get("file") == path]
+        retain = any(download_index[key].get("mega_url") for key in matching)
+        if retain:
+            deleted_at = time.time()
+            for key in matching:
+                entry = download_index[key]
+                if size_bytes is not None:
+                    entry["size_bytes"] = size_bytes
+                entry["local_deleted_at"] = deleted_at
+        else:
+            for key in matching:
+                download_index.pop(key, None)
+        if matching:
+            _save_index_locked()
+    return retain
 
 
 def finalize_cancelled(job, job_id):
@@ -2284,7 +2398,7 @@ def _file_referenced_by_other_job(path, exclude_job_id):
 
 
 def delete_job(job_id):
-    """Stop the job if active, delete its files, and forget it."""
+    """Stop and forget a job, retaining linked library metadata when needed."""
     job = jobs.get(job_id)
     if not job:
         return False
@@ -2298,11 +2412,7 @@ def delete_job(job_id):
     # otherwise deleting a duplicate would destroy everyone's copy.
     final = job.get("file")
     if final and not _file_referenced_by_other_job(final, job_id):
-        unregister_download(final)
-        try:
-            os.remove(final)
-        except OSError:
-            pass
+        _remove_local_library_file(final)
     remove_job_files(job_id)
 
     jobs.pop(job_id, None)
@@ -2506,7 +2616,16 @@ def cancel_download(job_id):
 @app.route("/api/delete/<job_id>", methods=["POST", "DELETE"])
 def delete_download(job_id):
     # Idempotent: deleting an unknown/already-gone job is a success.
-    delete_job(job_id)
+    job = jobs.get(job_id)
+    path = job.get("file") if job else None
+    if path:
+        filename, gid = _library_identity_for_path(path)
+        if _mega_upload_active(filename, gid):
+            return jsonify({"error": "Wait for the MEGA upload and link to finish"}), 409
+    try:
+        delete_job(job_id)
+    except OSError as exc:
+        return jsonify({"error": f"Could not delete the local file: {exc}"}), 500
     return jsonify({"ok": True})
 
 
@@ -2534,11 +2653,13 @@ def library():
     """
     gfilter = request.args.get("group", "all").strip() or "all"
 
-    # Completed downloads, one entry per unique on-disk file (the index may hold
-    # several keys pointing at the same path).
+    # Completed downloads, one entry per physical/historical path (the index
+    # may hold several dedup keys pointing at that path). MEGA-backed entries
+    # remain visible after their local media file has been removed.
     by_path = {}
     missing_duration = []
     missing_thumb = []
+    size_changed = False
     with index_lock:
         for entry in download_index.values():
             gid = entry.get("group_id") or ""
@@ -2549,30 +2670,54 @@ def library():
             p = entry.get("file")
             if not p or p in by_path:
                 continue
-            try:
-                if not os.path.exists(p):
+            local_available = os.path.isfile(p)
+            if local_available:
+                try:
+                    size = os.path.getsize(p)
+                    mtime = os.path.getmtime(p)
+                except OSError:
+                    local_available = False
+                    if not entry.get("mega_url"):
+                        continue
+                    size = int(entry.get("size_bytes") or 0)
+                    mtime = None
+                else:
+                    if entry.get("size_bytes") != size:
+                        entry["size_bytes"] = size
+                        size_changed = True
+            else:
+                if not entry.get("mega_url"):
                     continue
-                size = os.path.getsize(p)
-                mtime = os.path.getmtime(p)
-            except OSError:
-                continue
+                size = int(entry.get("size_bytes") or 0)
+                mtime = None
             thumb = entry.get("thumb")
+            created_at = (entry.get("created_at") or mtime
+                          or entry.get("mega_uploaded_at") or 0)
             by_path[p] = {
                 "filename": entry.get("filename") or os.path.basename(p),
                 "title": entry.get("title") or os.path.basename(p),
                 "url": entry.get("url") or "",
                 "size": size,
                 "mtime": mtime,
-                "created_at": entry.get("created_at") or mtime,
+                "created_at": created_at,
                 "duration": entry.get("duration"),
                 "has_thumb": bool(thumb and os.path.exists(thumb)),
                 "group_id": gid,
                 "group_name": group_name(gid),
+                "local_available": local_available,
+                "local_deleted_at": entry.get("local_deleted_at"),
+                "mega_url": entry.get("mega_url"),
+                "mega_remote_path": entry.get("mega_remote_path"),
+                "mega_account_id": entry.get("mega_account_id"),
+                "mega_account_label": entry.get("mega_account_label"),
+                "mega_uploaded_at": entry.get("mega_uploaded_at"),
             }
-            if not entry.get("duration"):
+            if local_available and not entry.get("duration"):
                 missing_duration.append(p)
-            if not thumb or not os.path.exists(thumb):
+            if local_available and (not thumb or not os.path.exists(thumb)):
                 missing_thumb.append(p)
+        if size_changed:
+            _save_index_locked()
 
     # Lazily backfill durations for older entries (a handful per request, so
     # browsing never stalls); results are persisted back to the index.
@@ -2618,7 +2763,7 @@ def library():
                 by_path[p]["has_thumb"] = True
 
     files = sorted(by_path.values(),
-                   key=lambda e: e["created_at"] or e["mtime"], reverse=True)
+                   key=lambda e: e["created_at"] or e["mtime"] or 0, reverse=True)
 
     # Live jobs (done jobs are covered by the file list above).
     ljobs = []
@@ -2662,11 +2807,13 @@ def library():
 def library_download():
     """Serve a completed download by its registered filename (survives restarts)."""
     name = request.args.get("f", "").strip()
+    gid = request.args.get("group_id")
     if not name or os.path.basename(name) != name:
         return jsonify({"error": "Bad filename"}), 400
     with index_lock:
         paths = [e.get("file") for e in download_index.values()
-                 if (e.get("filename") or "") == name and e.get("file")]
+                 if (e.get("filename") or "") == name and e.get("file")
+                 and (gid is None or (e.get("group_id") or "") == gid)]
     if not paths:
         return jsonify({"error": "File not found"}), 404
     path = paths[0]
@@ -2679,11 +2826,13 @@ def library_download():
 def library_thumb():
     """Serve a stored preview image for a completed download (by filename)."""
     name = request.args.get("f", "").strip()
+    gid = request.args.get("group_id")
     if not name or os.path.basename(name) != name:
         return jsonify({"error": "Bad filename"}), 400
     with index_lock:
         thumbs = [e.get("thumb") for e in download_index.values()
-                  if (e.get("filename") or "") == name and e.get("thumb")]
+                  if (e.get("filename") or "") == name and e.get("thumb")
+                  and (gid is None or (e.get("group_id") or "") == gid)]
     if not thumbs or not os.path.exists(thumbs[0]):
         return jsonify({"error": "No thumbnail"}), 404
     return send_file(thumbs[0], mimetype="image/jpeg")
@@ -2691,27 +2840,32 @@ def library_thumb():
 
 @app.route("/api/library/delete", methods=["POST"])
 def library_delete():
-    """Delete a completed download (and drop its index/job references)."""
+    """Delete local media; keep the library record when it has a MEGA link."""
     data = request.get_json(silent=True) or {}
     name = (data.get("f") or request.values.get("f") or "").strip()
+    gid_supplied = "group_id" in data or "group_id" in request.values
+    gid = str(data.get("group_id") if "group_id" in data
+              else request.values.get("group_id") or "")
     if not name or os.path.basename(name) != name:
         return jsonify({"error": "Bad filename"}), 400
     with index_lock:
         paths = [e.get("file") for e in download_index.values()
-                 if (e.get("filename") or "") == name and e.get("file")]
+                 if (e.get("filename") or "") == name and e.get("file")
+                 and (not gid_supplied or (e.get("group_id") or "") == gid)]
         if not paths:
             return jsonify({"error": "File not found"}), 404
         path = paths[0]
-        for j in jobs.values():
-            if j.get("file") == path:
-                j["file"] = None
-                j["filename"] = None
-    unregister_download(path)
+    _matched_name, matched_gid = _library_identity_for_path(path)
+    if _mega_upload_active(name, matched_gid):
+        return jsonify({"error": "Wait for the MEGA upload and link to finish"}), 409
     try:
-        os.remove(path)
-    except OSError:
-        pass
-    return jsonify({"ok": True})
+        retained = _remove_local_library_file(path)
+    except OSError as exc:
+        return jsonify({"error": f"Could not delete the local file: {exc}"}), 500
+    for job in jobs.values():
+        if job.get("file") == path:
+            job["file"] = None
+    return jsonify({"ok": True, "record_retained": retained})
 
 
 @app.route("/api/groups")
@@ -2788,12 +2942,12 @@ def delete_group(gid):
                 seen.add(e["file"])
         changed = False
         for path in files:
-            if not os.path.exists(path):
-                continue
-            newpath = os.path.join(DOWNLOAD_DIR, os.path.basename(path))
-            if os.path.abspath(newpath) != os.path.abspath(path):
+            newpath = path
+            target = os.path.join(DOWNLOAD_DIR, os.path.basename(path))
+            if os.path.isfile(path) and os.path.abspath(target) != os.path.abspath(path):
                 try:
-                    os.rename(path, newpath)
+                    os.rename(path, target)
+                    newpath = target
                 except OSError:
                     pass
             for e in download_index.values():
@@ -2838,11 +2992,63 @@ def _resolve_mega_files(selection):
     return resolved
 
 
+def _record_mega_link(upload):
+    """Persist a completed upload's public URL on every dedup row for its file."""
+    public_url = str(upload.get("public_url") or "").strip()
+    parsed_url = urlparse(public_url)
+    mega_host = (parsed_url.hostname or "").lower()
+    if (parsed_url.scheme != "https"
+            or not (mega_host == "mega.nz" or mega_host.endswith(".mega.nz"))):
+        raise ValueError("MEGA did not provide a valid public URL")
+    name = str(upload.get("filename") or "")
+    gid = str(upload.get("group_id") or "")
+    source = upload.get("source_path")
+    source_real = os.path.realpath(source) if source else None
+    uploaded_at = upload.get("uploaded_at") or upload.get("finished_at") or time.time()
+    values = {
+        "mega_url": public_url,
+        "mega_remote_path": upload.get("remote_path") or None,
+        "mega_account_id": upload.get("account_id") or None,
+        "mega_account_label": upload.get("account_label") or None,
+        "mega_uploaded_at": uploaded_at,
+    }
+    if upload.get("size") is not None:
+        values["size_bytes"] = int(upload["size"])
+    matched = False
+    changed = False
+    with index_lock:
+        for entry in download_index.values():
+            path = entry.get("file")
+            same_source = bool(
+                source_real and path and os.path.realpath(path) == source_real
+            )
+            same_identity = (
+                (entry.get("filename") or "") == name
+                and (entry.get("group_id") or "") == gid
+            )
+            if not same_source and not same_identity:
+                continue
+            for field, value in values.items():
+                if entry.get(field) != value:
+                    entry[field] = value
+                    changed = True
+            matched = True
+        if not matched:
+            raise ValueError(f"Library item no longer exists: {name}")
+        if changed:
+            _save_index_locked(strict=True)
+
+
 _init_db()
 load_index()
 _load_groups()
 _restore_fetch_batches()
-mega_helper = MegaHelper(DOWNLOAD_DIR, _resolve_mega_files)
+mega_helper = MegaHelper(
+    DOWNLOAD_DIR,
+    _resolve_mega_files,
+    on_link_ready=_record_mega_link,
+)
+mega_helper.reconcile_links()
 app.register_blueprint(mega_helper.blueprint)
 
 
