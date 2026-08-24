@@ -63,6 +63,11 @@
       "url_pattern": "https?://(?:[a-zA-Z0-9.-]+\\.)?files-example\\.invalid/a/[A-Za-z0-9]+",
       "item_href_regex": "/f/[A-Za-z0-9]{6,}$",
       "max_items": 150
+    },
+    {
+      "name": "example-kvs-tube",
+      "kind": "kvs_flashvars",
+      "url_pattern": "https?://(?:[a-zA-Z0-9.-]+\\.)?videos-example\\.invalid/video/\\d+/[^\\s\"']*"
     }
   ]
 }

@@ -15,7 +15,7 @@ import time
 import sqlite3
 from collections import OrderedDict, deque
 from concurrent.futures import Future, ThreadPoolExecutor
-from urllib.parse import quote, urljoin, urlparse
+from urllib.parse import quote, unquote, urljoin, urlparse
 from urllib.request import Request, urlopen
 from flask import Flask, request, jsonify, send_file, render_template
 from mega_helper import MegaHelper, MegaHelperError, is_mega_public_url
@@ -765,10 +765,59 @@ def _resolve_signed_file(url, prov):
     }
 
 
+def _resolve_kvs_flashvars(url, prov):
+    """Resolve a KVS (Kernel Video Sharing) tube page to its direct MP4 URL.
+
+    KVS sites (kt_player.js) hand their sources to the player through a JS
+    object stored in a per-render randomized variable (``var t0367453246 = {…}``),
+    so yt-dlp's generic extractor never finds ``flashvars`` and burns tens of
+    seconds of probing before failing. The page HTML carries everything needed:
+    ``video_url`` plus quality alternates, ``video_title`` and ``preview_url``.
+    Returning a non-empty filename routes this to the plain HTTP downloader —
+    no yt-dlp involvement at all.
+    """
+    html = fetch_html(url, referer=url)
+    if not html:
+        return None
+
+    def _flashvar(key):
+        m = re.search(r"\b" + re.escape(key) + r"\s*:\s*(['\"])(.*?)\1", html)
+        return m.group(2) if m else None
+
+    # Quality variants are video_url / video_alt_url / video_alt_url2 … with a
+    # matching ``*_text`` label like '720p'. Pick the tallest one.
+    variants = []
+    for m in re.finditer(r"\b(video_url|video_alt_url\d?)\s*:\s*(['\"])(.*?)\2", html):
+        media = m.group(3).strip()
+        # Some deployments store the whole URL percent-encoded.
+        if re.match(r"^https?%3a", media, re.IGNORECASE):
+            media = unquote(media)
+        if not re.match(r"^https?://", media):
+            continue
+        label = _flashvar(m.group(1) + "_text") or ""
+        hm = re.search(r"(\d{3,4})\s*p", label) or re.search(r"_(\d{3,4})p\.mp4", media)
+        variants.append((int(hm.group(1)) if hm else 0, media))
+    if not variants:
+        return None
+    media_url = max(variants, key=lambda v: v[0])[1]
+
+    title = strip_html(_flashvar("video_title")
+                       or extract_page_metadata(html, url)["title"] or "") or ""
+    return {
+        "media_url": media_url,
+        "referer": url,
+        "title": title,
+        "thumbnail": _flashvar("preview_url") or "",
+        "extractor": prov.get("name") or "",
+        "filename": (sanitize_title(title) or "kvs-video") + ".mp4",
+    }
+
+
 # Dispatch table: provider ``kind`` -> resolver callable(url, provider).
 _PROVIDER_RESOLVERS = {
     "json_stream_api": _resolve_json_stream_api,
     "signed_file_host": _resolve_signed_file,
+    "kvs_flashvars": _resolve_kvs_flashvars,
 }
 
 
