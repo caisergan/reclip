@@ -5,8 +5,17 @@ services:
     container_name: reclip
     ports:
       - "8899:8899"
+    environment:
+      # Site-specific embed providers stay out of the image (see .dockerignore);
+      # mount them at runtime from ./config/providers.json instead.
+      RECLIP_PROVIDERS: /app/config/providers.json
+      # MEGA account config/history is persisted inside the downloads volume.
+      RECLIP_MEGA_DIR: /app/downloads/.mega
+      RECLIP_MEGA_CONCURRENT: "2"
+      RECLIP_MEGA_SAFETY_MB: "16"
     volumes:
       - reclip-downloads:/app/downloads
+      - ./config:/app/config:ro
     restart: unless-stopped
 
 volumes:

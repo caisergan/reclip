@@ -17,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote, urljoin, urlparse
 from urllib.request import Request, urlopen
 from flask import Flask, request, jsonify, send_file, render_template
+from mega_helper import MegaHelper, MegaHelperError
 
 app = Flask(__name__)
 # Files are downloaded to and kept on the server here (override with
@@ -2802,10 +2803,42 @@ def delete_group(gid):
     return jsonify({"ok": True})
 
 
+# ---- MEGA helper plugin --------------------------------------------------
+# The browser sends only a registered filename + group id.  Resolve that pair
+# through ReClip's persisted library rather than accepting an arbitrary server
+# path from the request.
+def _resolve_mega_files(selection):
+    resolved = []
+    with index_lock:
+        entries = list(download_index.values())
+        for wanted in selection:
+            name = wanted.get("filename") or ""
+            gid = wanted.get("group_id") or ""
+            matches = [
+                entry for entry in entries
+                if (entry.get("filename") or "") == name
+                and (entry.get("group_id") or "") == gid
+                and entry.get("file")
+            ]
+            if not matches:
+                raise MegaHelperError(f'File not found in library: {name}', 404)
+            path = matches[0]["file"]
+            if not os.path.isfile(path):
+                raise MegaHelperError(f'File no longer exists: {name}', 404)
+            resolved.append({
+                "path": path,
+                "group_id": gid,
+                "group_name": group_name(gid),
+            })
+    return resolved
+
+
 _init_db()
 load_index()
 _load_groups()
 _restore_fetch_batches()
+mega_helper = MegaHelper(DOWNLOAD_DIR, _resolve_mega_files)
+app.register_blueprint(mega_helper.blueprint)
 
 
 if __name__ == "__main__":

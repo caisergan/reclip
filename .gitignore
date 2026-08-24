@@ -13,3 +13,6 @@ providers.json
 
 # runtime provider config (real domains live here, never commit)
 config/
+
+# locally installed MEGA-enabled rclone binary
+.tools/
