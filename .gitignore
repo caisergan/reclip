@@ -8,3 +8,8 @@ assets/*.mov
 .env.local
 .env.production
 .env.development
+# site-specific embed providers (real domains stay out of the repo)
+providers.json
+
+# runtime provider config (real domains live here, never commit)
+config/
