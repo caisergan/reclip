@@ -1,9 +1,11 @@
+import copy
 import os
 import shutil
 import tempfile
 import threading
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
@@ -27,6 +29,8 @@ class ReClipApiTests(unittest.TestCase):
         reclip.batches.clear()
         with reclip.fetch_lock:
             reclip.fetch_batches.clear()
+        with reclip._fetch_info_lock:
+            reclip._fetch_info_cache.clear()
         with reclip.index_lock:
             reclip.download_index.clear()
         with reclip.groups_lock:
@@ -73,6 +77,19 @@ class ReClipApiTests(unittest.TestCase):
         )
         return path
 
+    def wait_for_fetch(self, batch_id, timeout=3):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            with reclip.fetch_lock:
+                batch = reclip.fetch_batches.get(batch_id)
+                if batch and batch["finished"]:
+                    return {
+                        **batch,
+                        "urls": [dict(item) for item in batch["urls"]],
+                    }
+            time.sleep(0.01)
+        self.fail("fetch batch did not finish")
+
     def test_overhaul_is_index_and_legacy_ui_remains_available(self):
         root = self.client.get("/")
         self.assertEqual(root.status_code, 200)
@@ -86,6 +103,7 @@ class ReClipApiTests(unittest.TestCase):
         self.assertEqual(legacy.status_code, 200)
         self.assertIn(b"Free Media Downloader", legacy.data)
         self.assertIn(b'id="libraryMoveTarget"', legacy.data)
+        self.assertNotIn(b"fetch('/api/playlist'", legacy.data)
 
     def test_fetch_batch_can_be_reattached_and_finishes_with_normalized_info(self):
         entered = threading.Event()
@@ -130,6 +148,223 @@ class ReClipApiTests(unittest.TestCase):
         self.assertEqual(state["urls"][0]["status"], "done")
         self.assertEqual(state["urls"][0]["title"], "Controlled fetch")
         self.assertEqual(state["urls"][0]["formats"][0]["id"], "1080")
+
+    def test_fetch_info_coalesces_duplicates_caches_and_refreshes_library_state(self):
+        url = "https://example.test/cache-target"
+        entered = threading.Event()
+        release = threading.Event()
+        calls = 0
+        calls_lock = threading.Lock()
+        extracted = {
+            "title": "Cached metadata",
+            "thumbnail": "",
+            "duration": 12,
+            "uploader": "Tests",
+            "formats": [{"id": "720", "label": "720p", "height": 720}],
+            "id": "cache-target",
+            "extractor": "test",
+        }
+
+        def fake_extract(requested_url):
+            nonlocal calls
+            self.assertEqual(requested_url, url)
+            with calls_lock:
+                calls += 1
+            entered.set()
+            self.assertTrue(release.wait(2))
+            return extracted
+
+        with patch.object(reclip, "_extract_video_info", side_effect=fake_extract):
+            with ThreadPoolExecutor(max_workers=6) as pool:
+                futures = [pool.submit(reclip.fetch_video_info, url) for _ in range(6)]
+                self.assertTrue(entered.wait(2))
+                release.set()
+                results = [future.result(timeout=2) for future in futures]
+
+            self.assertEqual(calls, 1)
+            self.assertTrue(all(not item["already_on_server"] for item in results))
+            # Returned cards cannot mutate the cached nested format list.
+            results[0]["formats"][0]["label"] = "changed"
+            self.assertEqual(reclip.fetch_video_info(url)["formats"][0]["label"], "720p")
+
+            media = _DOWNLOAD_DIR / "cache-target.mp4"
+            media.write_bytes(b"cached video")
+            reclip.register_download(
+                "cache-target", "test", "Cached metadata", url,
+                "video", "720", str(media),
+            )
+            refreshed = reclip.fetch_video_info(url)
+
+        self.assertEqual(calls, 1, "library changes must not invalidate static metadata")
+        self.assertTrue(refreshed["already_on_server"])
+        self.assertEqual(refreshed["existing_file"], media.name)
+
+    def test_provider_fixed_file_skips_known_failing_ytdlp_wrapper(self):
+        resolved = {
+            "media_url": "https://cdn.example.test/signed/file",
+            "referer": "https://files.example.test/",
+            "title": "archive.zip",
+            "thumbnail": "",
+            "extractor": "test-files",
+            "filename": "archive.zip",
+        }
+        with patch.object(reclip, "_provider_resolver_applies", return_value=True), \
+             patch.object(reclip, "resolve_provider", return_value=resolved), \
+             patch.object(reclip, "run_ytdlp_json") as ytdlp:
+            info = reclip._extract_video_info("https://files.example.test/f/one")
+
+        ytdlp.assert_not_called()
+        self.assertEqual(info["title"], "archive.zip")
+        self.assertEqual(info["formats"][0]["id"], "direct")
+
+    def test_candidate_probes_are_bounded_concurrent_and_ordered(self):
+        candidates = [f"https://cdn.example.test/{index}.mp4" for index in range(10)]
+        active = 0
+        max_active = 0
+        counter_lock = threading.Lock()
+
+        def fake_verdict(url, referer=None):
+            nonlocal active, max_active
+            with counter_lock:
+                active += 1
+                max_active = max(max_active, active)
+            try:
+                time.sleep(0.02)
+                return int(url.rsplit("/", 1)[1].split(".", 1)[0]) % 3 - 1
+            finally:
+                with counter_lock:
+                    active -= 1
+
+        with patch.object(reclip, "media_verdict", side_effect=fake_verdict):
+            results = list(reclip._ordered_media_verdicts(candidates, referer="ref"))
+
+        self.assertEqual([candidate for candidate, _ in results], candidates)
+        self.assertGreater(max_active, 1)
+        self.assertLessEqual(max_active, reclip.FETCH_PROBE_WINDOW)
+
+    def test_playlist_roots_expand_concurrently_but_keep_input_order(self):
+        roots = [f"https://example.test/watch?list={index}" for index in range(6)]
+        active = 0
+        max_active = 0
+        counter_lock = threading.Lock()
+
+        def fake_expand(url):
+            nonlocal active, max_active
+            with counter_lock:
+                active += 1
+                max_active = max(max_active, active)
+            try:
+                time.sleep(0.03)
+                return [url + "/first", url + "/second"]
+            finally:
+                with counter_lock:
+                    active -= 1
+
+        with patch.object(reclip, "_expand_playlist_urls", side_effect=fake_expand):
+            expanded = reclip._expand_fetch_urls(roots)
+
+        self.assertGreater(max_active, 1)
+        self.assertLessEqual(max_active, reclip.FETCH_EXPAND_WORKERS)
+        self.assertEqual(
+            expanded,
+            [child for root in roots for child in (root + "/first", root + "/second")],
+        )
+
+    def test_provider_album_frontier_expands_concurrently_in_stable_order(self):
+        root = "https://example.test/root"
+        albums = [f"https://example.test/album/{index}" for index in range(8)]
+        active = 0
+        max_active = 0
+        counter_lock = threading.Lock()
+        provider = {"kind": "test-expander"}
+
+        def matching(url):
+            return provider if url == root or url in albums else None
+
+        def expand(url, _provider):
+            nonlocal active, max_active
+            if url == root:
+                return albums
+            with counter_lock:
+                active += 1
+                max_active = max(max_active, active)
+            try:
+                time.sleep(0.02)
+                return [url + "/file.mp4"]
+            finally:
+                with counter_lock:
+                    active -= 1
+
+        with patch.object(reclip, "_matching_expander", side_effect=matching), \
+             patch.dict(reclip._PROVIDER_EXPANDERS, {"test-expander": expand}):
+            expanded = reclip._expand_via_providers(root)
+
+        self.assertEqual(expanded, [album + "/file.mp4" for album in albums])
+        self.assertGreater(max_active, 1)
+        self.assertLessEqual(max_active, reclip.FETCH_EXPAND_WORKERS)
+
+    def test_fetch_batch_persists_only_initial_and_final_checkpoints(self):
+        urls = [f"https://example.test/persist-{index}" for index in range(12)]
+        writes = []
+
+        def fake_info(url):
+            return {
+                "title": url,
+                "thumbnail": "",
+                "duration": None,
+                "uploader": "",
+                "formats": [],
+                "id": None,
+                "extractor": "test",
+                "already_on_server": False,
+                "existing_file": "",
+            }
+
+        with patch.object(reclip, "fetch_video_info", side_effect=fake_info), \
+             patch.object(
+                 reclip, "_persist_fetch_batch",
+                 side_effect=lambda batch: writes.append(copy.deepcopy(batch)),
+             ):
+            batch_id = reclip._start_fetch_batch(urls)
+            state = self.wait_for_fetch(batch_id)
+
+        self.assertTrue(state["finished"])
+        self.assertEqual(len(writes), 2)
+        self.assertFalse(writes[0]["finished"])
+        self.assertTrue(writes[1]["finished"])
+        self.assertTrue(all(item["status"] == "done" for item in writes[1]["urls"]))
+
+    def test_concurrent_scrape_expansion_tracks_stable_items_not_shifted_indexes(self):
+        first = "https://example.test/scrape-first"
+        second = "https://example.test/scrape-second"
+        second_started = threading.Event()
+        first_applied = threading.Event()
+        real_complete = reclip._complete_fetch_item
+
+        def fake_scrape(url):
+            if url == first:
+                self.assertTrue(second_started.wait(2))
+                return [first + "/a.mp4", first + "/b.mp4"]
+            second_started.set()
+            self.assertTrue(first_applied.wait(2))
+            return [second + "/c.mp4"]
+
+        def tracked_complete(batch_id, target, **kwargs):
+            result = real_complete(batch_id, target, **kwargs)
+            if target["url"] == first:
+                first_applied.set()
+            return result
+
+        with patch.object(reclip, "_scrape_page", side_effect=fake_scrape), \
+             patch.object(reclip, "_complete_fetch_item", side_effect=tracked_complete):
+            batch_id = reclip._start_fetch_batch([first, second], kind="scrape")
+            state = self.wait_for_fetch(batch_id)
+
+        self.assertEqual(
+            [item["url"] for item in state["urls"]],
+            [first + "/a.mp4", first + "/b.mp4", second + "/c.mp4"],
+        )
+        self.assertTrue(all(item["status"] == "done" for item in state["urls"]))
 
     def test_download_dedup_reuses_library_file_and_protects_shared_reference(self):
         existing = _DOWNLOAD_DIR / "existing.mp4"

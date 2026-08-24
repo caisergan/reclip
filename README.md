@@ -58,6 +58,25 @@ under `.tools/rclone` automatically if the system rclone has no MEGA support.
 
 The previous interface remains available at **http://localhost:8899/legacy**.
 
+## Fetch performance tuning
+
+Metadata fetching uses bounded worker pools for independent URLs, playlist roots,
+and direct-media probes. Successful metadata is cached briefly, and simultaneous
+requests for the same URL share one extraction. These settings are separate from
+the download concurrency selected in the UI:
+
+| Variable | Default | Purpose |
+|---|---:|---|
+| `RECLIP_FETCH_WORKERS` | `6` | Concurrent per-URL metadata extractions (1–16) |
+| `RECLIP_FETCH_EXPAND_WORKERS` | `4` | Concurrent playlist/provider root expansions (1–8) |
+| `RECLIP_FETCH_PROBE_WORKERS` | `8` | Global direct-media probe limit (1–32) |
+| `RECLIP_FETCH_PROBE_WINDOW` | `4` | Speculative ordered probes per fetched page |
+| `RECLIP_FETCH_CACHE_TTL` | `300` | Successful metadata cache lifetime in seconds (`0` disables it) |
+| `RECLIP_FETCH_CACHE_SIZE` | `256` | Maximum cached URL entries (1–2048) |
+
+Lower the worker counts if a media host rate-limits parallel metadata requests or
+the server has limited memory.
+
 ## MEGA Helper
 
 1. Open **Downloads** and click the red **M** button.
