@@ -31,6 +31,20 @@ ACCOUNT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{2,47}$")
 EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 TRANSFER_STATES = {"queued", "uploading"}
 ACTIVE_STATES = {*TRANSFER_STATES, "linking"}
+MEGA_PUBLIC_HOSTS = {"mega.nz", "mega.co.nz"}
+
+
+def is_mega_public_url(value: str) -> bool:
+    """Return whether *value* uses an official MEGA public-link host."""
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return False
+    host = (parsed.hostname or "").lower()
+    return parsed.scheme == "https" and any(
+        host == allowed or host.endswith(f".{allowed}")
+        for allowed in MEGA_PUBLIC_HOSTS
+    )
 FINAL_STATES = {"done", "error", "cancelled"}
 
 
@@ -704,9 +718,7 @@ class MegaHelper:
         if not lines:
             raise MegaHelperError("MEGA did not return a public link", 502)
         value = lines[-1]
-        parsed = urlsplit(value)
-        host = (parsed.hostname or "").lower()
-        if parsed.scheme != "https" or not (host == "mega.nz" or host.endswith(".mega.nz")):
+        if not is_mega_public_url(value):
             raise MegaHelperError("MEGA returned an invalid public link", 502)
         return value
 
