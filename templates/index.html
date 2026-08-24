@@ -107,13 +107,13 @@
   .drop-area.drag{border-color:var(--focus); background:var(--card); box-shadow:0 0 0 3px rgba(91,99,232,0.12)}
   .drop-area:focus-within{border-color:var(--focus); background:var(--card); box-shadow:0 0 0 3px rgba(91,99,232,0.10)}
   .drop-area textarea{
-    width:100%; min-height:104px; padding:38px 14px 36px;
+    width:100%; min-height:104px; padding:12px 14px 42px;
     border:none; background:transparent; outline:none; resize:none;
     font-family:'JetBrains Mono', monospace; font-size:13.5px; line-height:1.6; color:var(--fg);
   }
   .drop-area textarea::placeholder{color:var(--muted-2)}
   .area-actions{
-    position:absolute; top:8px; right:8px; display:flex; gap:6px; opacity:.68; transition:opacity .15s;
+    position:absolute; left:8px; bottom:8px; z-index:1; display:flex; gap:6px; opacity:.68; transition:opacity .15s;
   }
   .area-actions:hover,.area-actions:focus-within{opacity:1}
   .mini-btn{
