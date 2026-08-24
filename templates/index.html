@@ -1708,7 +1708,7 @@ function renderMegaJobs(){
   const labels={queued:'queued',uploading:'uploading',linking:'creating link',done:'done',error:'error',cancelled:'cancelled'};
   list.innerHTML=megaUploads.map(job=>{
     const cancellable=['queued','uploading'].includes(job.status);
-    const retryable=job.remote_uploaded&&job.status==='error';
+    const retryable=(!job.public_url&&job.status==='done')||(job.remote_uploaded&&job.status==='error');
     const progress=Math.min(100,Math.max(0,Number(job.progress)||0));
     const transfer=job.status==='uploading'?`${fmtBytes(job.uploaded_bytes)} / ${fmtBytes(job.size)}${job.speed?' · '+fmtBytes(job.speed)+'/s':''}${job.eta!=null?' · ETA '+fmtEtaMega(job.eta):''}`:job.status==='linking'?'Creating public MEGA link…':fmtBytes(job.size);
     const actions=job.public_url||retryable?`<div class="mega-job-actions">${job.public_url?`<button class="mega-small-btn" type="button" onclick="openMegaLink('${encodeURIComponent(job.public_url)}')">Open in MEGA</button>`:''}${retryable?`<button class="mega-small-btn" type="button" onclick="retryMegaLink('${job.id}')">Retry link</button>`:''}</div>`:'';

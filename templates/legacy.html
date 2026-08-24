@@ -1747,7 +1747,8 @@
       const labels = { queued: 'queued', uploading: 'uploading', linking: 'creating link', done: 'done', error: 'error', cancelled: 'cancelled' };
       list.innerHTML = megaUploads.map(job => {
         const cancellable = ['queued', 'uploading'].includes(job.status);
-        const retryable = job.remote_uploaded && job.status === 'error';
+        const retryable = (!job.public_url && job.status === 'done') ||
+          (job.remote_uploaded && job.status === 'error');
         const progress = Math.min(100, Math.max(0, Number(job.progress || 0)));
         const transfer = job.status === 'uploading'
           ? `${fmtSizeJS(job.uploaded_bytes)} / ${fmtSizeJS(job.size)}${job.speed ? ' · ' + fmtSizeJS(job.speed) + '/s' : ''}${job.eta != null ? ' · ETA ' + fmtEtaMega(job.eta) : ''}`
