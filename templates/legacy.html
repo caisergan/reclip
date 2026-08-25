@@ -539,7 +539,7 @@
       margin-top: 4px;
     }
 
-    /* Download all bar */
+    /* Download-missing bar */
     .dl-all-bar {
       display: flex;
       gap: 10px;
@@ -1317,13 +1317,10 @@
           <div class="mega-status" id="megaUploadStatus" hidden></div>
           <div class="mega-selected-summary" id="megaSelectedSummary">No files selected.</div>
           <form class="mega-form" onsubmit="startMegaUpload(event)" style="margin-top:0;padding-top:0;border-top:0">
-            <div class="mega-form-row">
-              <select id="megaDestinationAccount" aria-label="Destination account">
-                <option value="auto">Automatic — most free space</option>
-              </select>
-              <input id="megaFolder" value="ReClip" maxlength="240" placeholder="Remote folder" autocomplete="off" required>
-            </div>
-            <label><input id="megaPreserveGroups" type="checkbox" checked> Preserve ReClip groups as MEGA folders</label>
+            <select id="megaDestinationAccount" aria-label="Destination account">
+              <option value="auto">Automatic — most free space</option>
+            </select>
+            <div class="mega-selected-summary">MEGA path: <code>reclip/&lt;group&gt;/&lt;provider&gt;/video.mp4</code></div>
             <button class="mega-primary" id="megaUploadBtn" type="submit">Queue upload</button>
           </form>
           <div class="mega-divider"></div>
@@ -1376,12 +1373,16 @@
         .filter(i => i >= 0);
     }
 
+    function missingReadyIndexes(indexes = readyIndexes()) {
+      return indexes.filter(i => !cardData[i]?.alreadyOnServer);
+    }
+
     // NOTE: starting a new fetch never stops pollers or wipes cards anymore —
     // fetches queue up (each batch owns its own card range), and running
     // downloads keep their live progress pollers.
 
     function startAutoDownloads() {
-      const readyIdx = readyIndexes();
+      const readyIdx = missingReadyIndexes();
       if (!readyIdx.length) return;
       if (readyIdx.length > 1) {
         renderDownloadAll();
@@ -1595,10 +1596,6 @@
       if (!overlay) return;
       overlay.hidden = false;
       document.body.style.overflow = 'hidden';
-      try {
-        const saved = localStorage.getItem('reclip_mega_folder');
-        if (saved) document.getElementById('megaFolder').value = saved;
-      } catch {}
       renderMegaSelection();
       await Promise.all([loadMegaAccounts(false), loadMegaJobs()]);
     }
@@ -1741,7 +1738,6 @@
         setMegaStatus('megaUploadStatus', 'Select at least one file from Downloads.', true);
         return;
       }
-      const folder = document.getElementById('megaFolder').value.trim();
       const button = document.getElementById('megaUploadBtn');
       if (button) { button.disabled = true; button.textContent = 'Checking quotas…'; }
       setMegaStatus('megaUploadStatus', 'Reading live quotas and planning account allocation…');
@@ -1752,11 +1748,8 @@
           body: JSON.stringify({
             files: files.map(file => ({ filename: file.filename, group_id: file.group_id || '' })),
             account_id: document.getElementById('megaDestinationAccount').value || 'auto',
-            folder,
-            preserve_groups: document.getElementById('megaPreserveGroups').checked,
           }),
         });
-        try { localStorage.setItem('reclip_mega_folder', folder); } catch {}
         megaSelected.clear();
         renderMegaSelection();
         renderLibrary();
@@ -2417,7 +2410,7 @@
     }
 
     function afterBatchReady() {
-      if (readyIndexes().length > 1) renderDownloadAll();
+      if (missingReadyIndexes().length > 1) renderDownloadAll();
       if (autoDownload) startAutoDownloads();
     }
 
@@ -2593,7 +2586,7 @@
       }
       bar.innerHTML = `
         <div class="dl-all-row">
-          <button class="dl-all-btn" onclick="dlAll()">Download All</button>
+          <button class="dl-all-btn" onclick="dlAll()">Download missing</button>
         </div>
         <div id="overall-progress" class="overall-progress" style="display:none">
           <div class="overall-head">
@@ -2768,7 +2761,7 @@
     }
 
     async function dlAll() {
-      const readyIdx = readyIndexes();
+      const readyIdx = missingReadyIndexes();
       if (!readyIdx.length) return;
 
       renderDownloadAll();
@@ -2808,13 +2801,13 @@
         data = await res.json();
       } catch {
         readyIdx.forEach(i => { cardData[i].status = 'error'; cardData[i].error = 'Failed to start batch'; renderCard(i); });
-        if (btn) { btn.disabled = false; btn.textContent = 'Download All'; }
+        if (btn) { btn.disabled = false; btn.textContent = 'Download missing'; }
         return;
       }
 
       if (data.error || !data.jobs) {
         readyIdx.forEach(i => { cardData[i].status = 'error'; cardData[i].error = data.error || 'Batch failed'; renderCard(i); });
-        if (btn) { btn.disabled = false; btn.textContent = 'Download All'; }
+        if (btn) { btn.disabled = false; btn.textContent = 'Download missing'; }
         return;
       }
 
@@ -2854,7 +2847,7 @@
           clearInterval(iv);
           batchPollIv = null;
           const btn = document.querySelector('.dl-all-btn');
-          if (btn) { btn.disabled = false; btn.textContent = 'Download All'; }
+          if (btn) { btn.disabled = false; btn.textContent = 'Download missing'; }
           setTimeout(hideOverall, 6000);
         }
       }, 800);

@@ -87,8 +87,11 @@ the server has limited memory.
 3. Select completed files by clicking their cards in the Downloads list.
 4. Choose **Automatic** to spread files across enabled accounts by available
    storage, or choose one account explicitly.
-5. Set the destination folder and queue the upload. Progress, speed, ETA, errors
-   and cancellation are available in the same panel.
+5. Queue the upload. ReClip stores each file at
+   `reclip/<group>/<provider>/video.mp4` on MEGA, where `video.mp4` is the
+   original filename. The `ungrouped` and `unknown` fallbacks are used when
+   metadata is unavailable. Progress, speed, ETA, errors and cancellation
+   are available in the same panel.
 6. After the transfer, ReClip creates and saves a public MEGA link. Use **Open in
    MEGA** from either the transfer row or Downloads card.
 7. Deleting a MEGA-backed item removes only its local media file. The card stays

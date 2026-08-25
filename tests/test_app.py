@@ -96,6 +96,10 @@ class ReClipApiTests(unittest.TestCase):
         self.assertIn(b"<title>ReClip</title>", root.data)
         self.assertIn(b'id="megaOverlay"', root.data)
         self.assertIn(b'id="librarySelectAllBtn"', root.data)
+        self.assertIn(b'id="librarySelectMenu"', root.data)
+        self.assertIn(b'Select not on MEGA', root.data)
+        self.assertIn(b'Download missing', root.data)
+        self.assertIn(b'missingReadyIndexes', root.data)
         self.assertIn(b'id="splitFetch"', root.data)
         self.assertIn(b'id="fetchProgress"', root.data)
         self.assertIn(b'id="selectAllBtn"', root.data)
@@ -542,6 +546,91 @@ class ReClipApiTests(unittest.TestCase):
                 "video-1", "youtube", item["url"], "video", "1080"
             )
         )
+
+    def test_direct_transfer_probe_reuses_range_metadata(self):
+        output = (
+            "HTTP/2 206\r\ncontent-range: bytes 0-0/10485760\r\n\r\n"
+            f"\n{reclip.MEDIA_TRANSFER_MARKER}206|https://cdn.example.test/video.mp4"
+        )
+        completed = reclip.subprocess.CompletedProcess([], 0, stdout=output, stderr="")
+        with patch.object(reclip.subprocess, "run", return_value=completed) as run:
+            info = reclip._media_transfer_info("https://example.test/video", "https://example.test/")
+        self.assertEqual(info["total"], 10 * 1024 * 1024)
+        self.assertTrue(info["range_supported"])
+        self.assertEqual(info["url"], "https://cdn.example.test/video.mp4")
+        self.assertEqual(run.call_count, 1)
+
+    def test_segmented_curl_assembles_verified_ranges(self):
+        fake_bin = _DOWNLOAD_DIR / "fake-bin"
+        fake_bin.mkdir()
+        fake_curl = fake_bin / "curl"
+        fake_curl.write_text(
+            "#!/usr/bin/env python3\n"
+            "import sys\n"
+            "args = sys.argv[1:]\n"
+            "start, end = map(int, args[args.index('-r') + 1].split('-'))\n"
+            "output = args[args.index('-o') + 1]\n"
+            "with open(output, 'wb') as handle:\n"
+            "    handle.write(bytes(i % 251 for i in range(start, end + 1)))\n"
+        )
+        fake_curl.chmod(0o755)
+        total = 96
+        part = _DOWNLOAD_DIR / "segmented.part"
+        info = {"total": total, "range_supported": True, "url": "https://cdn.test/file"}
+        path = str(fake_bin) + os.pathsep + os.environ.get("PATH", "")
+        with patch.dict(os.environ, {"PATH": path}), \
+             patch.object(reclip, "SEGMENT_MIN_SIZE", 1), \
+             patch.object(reclip, "SEGMENT_TARGET_SIZE", 32), \
+             patch.object(reclip, "SEGMENT_MAX_COUNT", 4):
+            result = reclip._segmented_curl_download(
+                {}, str(part), "https://example.test/file", None, info
+            )
+
+        self.assertTrue(result)
+        self.assertEqual(part.read_bytes(), bytes(i % 251 for i in range(total)))
+        self.assertEqual(list(_DOWNLOAD_DIR.glob("segmented.part.seg*")), [])
+
+    def test_segmented_downloads_are_promoted_from_part_files(self):
+        def stage(_job, part_path, *_args):
+            Path(part_path).write_bytes(b"video-bytes" * 16)
+            return True
+
+        info = {"total": 176, "range_supported": True, "url": "https://cdn.test/file"}
+        with patch.object(reclip, "_media_transfer_info", return_value=info), \
+             patch.object(reclip, "_segmented_curl_download", side_effect=stage):
+            direct_job = {"format": "video"}
+            self.assertTrue(reclip._attempt_direct(
+                direct_job, "segmented-video", "https://example.test/video", None, "timeout"
+            ))
+            plain_job = {"format": "video"}
+            self.assertTrue(reclip._attempt_plain_download(
+                plain_job, "segmented-file", "https://example.test/file", None,
+                "archive.zip", "timeout",
+            ))
+
+        self.assertTrue((_DOWNLOAD_DIR / "segmented-video.mp4").is_file())
+        self.assertFalse((_DOWNLOAD_DIR / "segmented-video.mp4.part").exists())
+        self.assertTrue((_DOWNLOAD_DIR / "segmented-file.zip").is_file())
+        self.assertFalse((_DOWNLOAD_DIR / "segmented-file.zip.part").exists())
+
+    def test_mega_resolver_supplies_group_and_provider_path_metadata(self):
+        media = self.add_download("clip.mp4", "group-a")
+        resolved = reclip._resolve_mega_files([
+            {"filename": media.name, "group_id": "group-a"}
+        ])
+        self.assertEqual(resolved[0]["group_id"], "group-a")
+        self.assertEqual(resolved[0]["provider"], "youtube")
+
+        generic = _DOWNLOAD_DIR / "generic.mp4"
+        generic.write_bytes(b"generic video")
+        reclip.register_download(
+            "generic-1", "Generic", "Generic", "https://www.example.test/watch/1",
+            "video", "best", str(generic),
+        )
+        fallback = reclip._resolve_mega_files([
+            {"filename": generic.name, "group_id": ""}
+        ])
+        self.assertEqual(fallback[0]["provider"], "example.test")
 
     def test_mega_link_survives_local_delete_transfer_clear_and_reload(self):
         media = _DOWNLOAD_DIR / "linked.mp4"

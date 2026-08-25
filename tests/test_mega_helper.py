@@ -80,7 +80,7 @@ class MegaHelperTests(unittest.TestCase):
                 result.append({
                     "path": str(self.files[key]),
                     "group_id": key[0],
-                    "group_name": "Group A" if key[0] else "",
+                    "provider": "youtube",
                 })
             return result
 
@@ -139,7 +139,7 @@ class MegaHelperTests(unittest.TestCase):
             self.add_file("large.mp4", 6 * 1024 * 1024, "group-a"),
             self.add_file("small.mp4", 4 * 1024 * 1024),
         ]
-        result = self.helper.enqueue(selection, folder="ReClip", preserve_groups=True)
+        result = self.helper.enqueue(selection, folder="Elsewhere", preserve_groups=False)
         self.assertEqual(len(result["jobs"]), 2)
         self.assertEqual({job["account_id"] for job in result["jobs"]}, {first["id"], second["id"]})
         jobs = self.wait_for_uploads()
@@ -148,7 +148,9 @@ class MegaHelperTests(unittest.TestCase):
         self.assertEqual(len(self.linked), 2)
         self.assertTrue(all(item["source_path"] for item in self.linked))
         grouped = next(job for job in jobs if job["filename"] == "large.mp4")
-        self.assertEqual(grouped["remote_path"], "ReClip/Group A/large.mp4")
+        ungrouped = next(job for job in jobs if job["filename"] == "small.mp4")
+        self.assertEqual(grouped["remote_path"], "reclip/group-a/youtube/large.mp4")
+        self.assertEqual(ungrouped["remote_path"], "reclip/ungrouped/youtube/small.mp4")
 
     def test_link_failure_can_be_retried_without_uploading_again(self):
         self.helper.add_account("Only", "only@example.com", "secret")

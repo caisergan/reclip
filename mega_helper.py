@@ -32,6 +32,7 @@ EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 TRANSFER_STATES = {"queued", "uploading"}
 ACTIVE_STATES = {*TRANSFER_STATES, "linking"}
 MEGA_PUBLIC_HOSTS = {"mega.nz", "mega.co.nz"}
+MEGA_UPLOAD_ROOT = "reclip"
 
 
 def is_mega_public_url(value: str) -> bool:
@@ -504,22 +505,6 @@ class MegaHelper:
     # Upload planning and execution
 
     @staticmethod
-    def _remote_folder(value: str) -> str:
-        value = (value or "ReClip").strip().replace("\\", "/")
-        parts = []
-        for raw in value.split("/"):
-            part = raw.strip()
-            if not part:
-                continue
-            if part in {".", ".."} or any(ord(ch) < 32 for ch in part):
-                raise MegaHelperError("Invalid MEGA destination folder")
-            parts.append(part)
-        folder = "/".join(parts)
-        if not folder or len(folder) > 240:
-            raise MegaHelperError("MEGA destination folder is required (maximum 240 characters)")
-        return folder
-
-    @staticmethod
     def _remote_component(value: str) -> str:
         value = str(value or "").replace("/", "-").replace("\\", "-").strip()
         value = "".join(ch for ch in value if ord(ch) >= 32)
@@ -568,7 +553,9 @@ class MegaHelper:
                     "filename": os.path.basename(path),
                     "size": stat.st_size,
                     "group_id": str(item.get("group_id") or ""),
-                    "group_name": str(item.get("group_name") or ""),
+                    "provider": str(
+                        item.get("provider") or item.get("extractor") or ""
+                    ),
                 }
             )
         return result
@@ -578,9 +565,11 @@ class MegaHelper:
         selection: object,
         *,
         account_id: str = "auto",
-        folder: str = "ReClip",
-        preserve_groups: bool = True,
+        folder: str | None = None,
+        preserve_groups: bool | None = None,
     ) -> dict:
+        # ``folder`` and ``preserve_groups`` remain accepted for older API
+        # callers, but the destination hierarchy is now intentionally fixed.
         # Keep source resolution and job registration atomic with ReClip's
         # library moves/deletes. Either the upload claims the old identity or a
         # concurrent request must resolve the new one.
@@ -588,8 +577,6 @@ class MegaHelper:
             return self._enqueue_locked(
                 selection,
                 account_id=account_id,
-                folder=folder,
-                preserve_groups=preserve_groups,
             )
 
     def _enqueue_locked(
@@ -597,12 +584,9 @@ class MegaHelper:
         selection: object,
         *,
         account_id: str = "auto",
-        folder: str = "ReClip",
-        preserve_groups: bool = True,
     ) -> dict:
         self._ensure_available()
         files = self._resolve_selection(selection)
-        folder = self._remote_folder(folder)
         # Allocation always starts with a fresh server-side storage quota.
         self.refresh_all_quotas(force=True)
 
@@ -656,12 +640,17 @@ class MegaHelper:
             for index, item in enumerate(files):
                 aid = assignment[index]
                 account = enabled[aid]
-                remote_parts = [folder]
-                if preserve_groups and item.get("group_name"):
-                    component = self._remote_component(item["group_name"])
-                    if component:
-                        remote_parts.append(component)
-                remote_parts.append(item["filename"])
+                # Keep every upload in one deterministic hierarchy. Group ids
+                # are stable when display names change; explicit fallbacks keep
+                # ungrouped or legacy records at the same four-level depth.
+                group = self._remote_component(item.get("group_id"))
+                provider = self._remote_component(item.get("provider"))
+                remote_parts = [
+                    MEGA_UPLOAD_ROOT,
+                    group if group not in {"", ".", ".."} else "ungrouped",
+                    provider if provider not in {"", ".", ".."} else "unknown",
+                    item["filename"],
+                ]
                 job_id = uuid.uuid4().hex
                 job = {
                     "id": job_id,
@@ -1123,8 +1112,6 @@ class MegaHelper:
             result = self.enqueue(
                 data.get("files"),
                 account_id=str(data.get("account_id") or "auto"),
-                folder=str(data.get("folder") or "ReClip"),
-                preserve_groups=bool(data.get("preserve_groups", True)),
             )
             return jsonify(result), 202
 
