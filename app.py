@@ -1989,6 +1989,44 @@ def _remove_local_library_file(path):
         return retain
 
 
+def _delete_local_library_items(selection):
+    """Delete selected local media while preserving all MEGA-backed records."""
+    clean = _clean_library_selections(selection)
+    with library_mutation_lock:
+        with index_lock:
+            items = _resolve_library_items_locked(clean)
+
+        local_items = [item for item in items if item["local_available"]]
+        for item in local_items:
+            source = item["from"]
+            if _mega_upload_active(source["filename"], source["group_id"]):
+                raise LibraryMoveError(
+                    f"Wait for the MEGA upload and link to finish: {source['filename']}",
+                    409,
+                )
+
+        retained = 0
+        for item in local_items:
+            try:
+                if _remove_local_library_file(item["path"]):
+                    retained += 1
+            except OSError as exc:
+                raise LibraryMoveError(
+                    f"Could not delete the local file: {exc}", 500
+                ) from exc
+            for job in jobs.values():
+                if job.get("file") == item["path"]:
+                    job["file"] = None
+
+        return {
+            "ok": True,
+            "selected_count": len(items),
+            "deleted_count": len(local_items),
+            "skipped_count": len(items) - len(local_items),
+            "record_retained_count": retained,
+        }
+
+
 def finalize_cancelled(job, job_id):
     """Mark a job stopped and remove any partial files it left behind."""
     job["status"] = "cancelled"
@@ -3805,6 +3843,19 @@ def library_delete():
             if job.get("file") == path:
                 job["file"] = None
     return jsonify({"ok": True, "record_retained": retained})
+
+
+@app.route("/api/library/delete-selected", methods=["POST"])
+def library_delete_selected():
+    """Delete selected local copies without deleting anything from MEGA."""
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "Invalid file selection"}), 400
+    try:
+        result = _delete_local_library_items(data.get("files"))
+    except LibraryMoveError as exc:
+        return jsonify({"error": exc.message}), exc.status
+    return jsonify(result)
 
 
 @app.route("/api/library/group", methods=["PATCH"])

@@ -450,6 +450,8 @@
   .library-selection button:disabled,.library-selection select:disabled{opacity:.45;cursor:not-allowed}
   .library-selection .mega-send{color:#fff; border-color:#D9272E; background:#D9272E; font-weight:600}
   .library-selection .mega-send:hover{color:#fff; border-color:#B91C24; background:#B91C24}
+  .library-selection .delete-selected{color:#B4232A;border-color:rgba(217,39,46,.28);background:#FFF9F9}
+  .library-selection .delete-selected:hover{color:#991B1F;border-color:#E9AEB3;background:#FFF1F2}
   .mega-overlay{position:fixed; inset:0; z-index:100; display:flex; align-items:center; justify-content:center; padding:22px; background:rgba(10,12,18,0.58); backdrop-filter:blur(8px)}
   .mega-overlay[hidden]{display:none}
   .mega-dialog{width:min(980px,100%); max-height:min(820px,calc(100vh - 44px)); overflow:hidden; display:flex; flex-direction:column; border:1px solid var(--border); border-radius:18px; background:var(--card); box-shadow:0 28px 90px rgba(9,9,11,0.25)}
@@ -519,7 +521,16 @@
   .overall.show{display:block; animation: in .25s ease}
   .overall-head{display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px}
   .overall-head strong{font-size:12px; font-weight:600}
+  .overall-actions{display:flex;align-items:center;gap:4px}
+  .overall-actions .icon-btn{width:24px;height:24px}
+  .overall-actions svg{width:13px;height:13px;transition:transform .15s}
+  .overall-details{display:block}
   .overall-sub{font-size:11px; font-family:'JetBrains Mono', monospace; color:var(--muted); margin-top:6px}
+  .overall-restore{display:none;height:36px;min-width:66px;padding:0 10px;border:1px solid var(--border);border-radius:10px;background:var(--card);color:var(--fg);box-shadow:var(--shadow-float);font:600 10px 'JetBrains Mono',monospace;cursor:pointer;pointer-events:auto}
+  .overall.collapsed{right:6px;bottom:6px;width:auto;max-width:none;padding:0;border:0;background:transparent;box-shadow:none;pointer-events:none}
+  .overall.collapsed .overall-head,.overall.collapsed .overall-details{display:none}
+  .overall.collapsed .overall-restore{display:inline-flex;align-items:center;justify-content:center;gap:5px}
+  .overall-restore svg{width:14px;height:14px}
   /* Toast */
   .toasts{position:fixed; left:50%; bottom:22px; transform:translateX(-50%); display:flex; flex-direction:column; gap:8px; z-index:60; pointer-events:none}
   .toast{background:var(--accent); color:#fff; font-size:12px; font-weight:500; padding:9px 14px; border-radius:999px; box-shadow:var(--shadow-float); animation: in .25s ease}
@@ -743,6 +754,7 @@
       <select id="libraryMoveTarget" aria-label="Move selected files to group"><option value="">Ungrouped</option></select>
       <button type="button" id="libraryMoveBtn" onclick="moveSelectedLibrary()">Move</button>
       <button type="button" id="libraryMegaBtn" class="mega-send" onclick="openMega()">Send to MEGA</button>
+      <button type="button" id="libraryDeleteBtn" class="delete-selected" onclick="deleteSelectedLibrary()">Delete selected</button>
       <button type="button" onclick="clearLibrarySelection()">Clear</button>
     </div>
   </aside>
@@ -795,10 +807,10 @@
   </div>
 </div>
 
-<div class="overall" id="overall">
-  <div class="overall-head"><strong id="overallLabel">2/4 · 48%</strong><button class="icon-btn" style="width:24px;height:24px" onclick="hideOverall()">×</button></div>
-  <div class="track-bg"><div class="fill" id="overallFill" style="width:48%"></div></div>
-  <div class="overall-sub" id="overallSub">Downloading…</div>
+<div class="overall" id="overall" aria-label="Overall download progress">
+  <div class="overall-head"><strong id="overallLabel">2/4 · 48%</strong><div class="overall-actions"><button class="icon-btn" type="button" title="Collapse download progress" aria-label="Collapse download progress" onclick="collapseOverall()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg></button><button class="icon-btn" type="button" title="Dismiss download progress" aria-label="Dismiss download progress" onclick="hideOverall()">×</button></div></div>
+  <div class="overall-details"><div class="track-bg"><div class="fill" id="overallFill" style="width:48%"></div></div><div class="overall-sub" id="overallSub">Downloading…</div></div>
+  <button class="overall-restore" type="button" onclick="expandOverall()" title="Show download progress" aria-label="Show download progress"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M12 3v11"/><path d="m8 10 4 4 4-4"/><path d="M5 19h14"/></svg><span id="overallMiniLabel">48%</span></button>
 </div>
 
 <div class="toasts" id="toasts"></div>
@@ -1294,7 +1306,7 @@ async function downloadIndexes(indexes){
   const ready=[...new Set(indexes)].filter(index=>cards[index]?.status==='ready');
   if(!ready.length){toast('Nothing to download');return;}
   if(ready.length===1){downloadOne(ready[0]);return;}
-  document.getElementById('overall').classList.add('show');
+  const overall=document.getElementById('overall');overall.classList.add('show');overall.classList.remove('collapsed');
   ready.forEach(index=>{Object.assign(cards[index],{status:'queued',progress:0,speed:'',eta:'',selected:false,cancelRequested:false});});
   renderCards();updateOverall({completed:0,total:ready.length,overall_progress:0,errored:0,cancelled:0,finished:false});
   try{
@@ -1310,12 +1322,13 @@ function downloadAll(){
 }
 function pollBatch(batchId){
   if(!batchId||batchPollTimers.has(batchId))return;
+  document.getElementById('overall').classList.add('show');
   const timer=setInterval(async()=>{
     try{
       const data=await apiJson('/api/batch/'+encodeURIComponent(batchId));
       (data.jobs||[]).forEach(job=>{const index=cards.findIndex(card=>card?.jobId===job.job_id);if(index>=0)applyJobUpdate(index,job);});
       updateOverall(data);
-      if(data.finished){clearInterval(timer);batchPollTimers.delete(batchId);scheduleLibraryRefresh();setTimeout(hideOverall,5000);}
+      if(data.finished){clearInterval(timer);batchPollTimers.delete(batchId);scheduleLibraryRefresh();setTimeout(()=>{if(!batchPollTimers.size)collapseOverall();},5000);}
     }catch{}
   },800);
   batchPollTimers.set(batchId,timer);
@@ -1324,10 +1337,13 @@ function updateOverall(data){
   const total=Number(data.total)||0,completed=Number(data.completed)||0,pct=Math.round(Number(data.overall_progress)||0);
   document.getElementById('overallLabel').textContent=`${completed}/${total} · ${pct}%`;
   document.getElementById('overallFill').style.width=pct+'%';
+  document.getElementById('overallMiniLabel').textContent=pct+'%';
   const details=[];if(data.errored)details.push(`${data.errored} failed`);if(data.cancelled)details.push(`${data.cancelled} stopped`);
   document.getElementById('overallSub').textContent=details.length?details.join(' · '):data.finished?'All done ✓':'Downloading…';
 }
-function hideOverall(){document.getElementById('overall').classList.remove('show');}
+function collapseOverall(){const overall=document.getElementById('overall');if(overall.classList.contains('show'))overall.classList.add('collapsed');}
+function expandOverall(){document.getElementById('overall').classList.remove('collapsed');}
+function hideOverall(){const overall=document.getElementById('overall');overall.classList.remove('show','collapsed');}
 function scheduleLibraryRefresh(){
   if(libraryRefreshTimer)return;
   libraryRefreshTimer=setTimeout(async()=>{libraryRefreshTimer=null;await refreshLibrary();await refreshGroups();},1000);
@@ -1562,6 +1578,7 @@ async function deleteGroup(encodedId){
 // Shared library selection (used by group moves and MEGA uploads)
 const librarySelected=new Set();
 let libraryMoveBusy=false;
+let libraryDeleteBusy=false;
 let megaAccounts=[];
 let megaUploads=[];
 let megaPollTimer=null;
@@ -1627,13 +1644,13 @@ function syncLibrarySelectAllButton(){
   const all=keys.length>0&&selected===keys.length;
   const partial=selected>0&&!all;
   const label=!keys.length?'No shown files to select':selected?`${selected} of ${keys.length} shown files selected. Choose selection action`:`Choose files to select from ${keys.length} shown`;
-  button.disabled=keys.length===0||libraryMoveBusy;
+  button.disabled=keys.length===0||libraryMoveBusy||libraryDeleteBusy;
   button.classList.toggle('active',all);button.classList.toggle('partial',partial);
   button.setAttribute('aria-pressed',all?'true':partial?'mixed':'false');
   button.title=label;button.setAttribute('aria-label',label);
   const allMeta=document.getElementById('librarySelectAllMeta');if(allMeta)allMeta.textContent=`${keys.length} shown file${keys.length===1?'':'s'}`;
   const missingMeta=document.getElementById('librarySelectMissingMegaMeta');if(missingMeta)missingMeta.textContent=`${missingKeys.length} local file${missingKeys.length===1?'':'s'} without a MEGA link`;
-  const missingButton=document.getElementById('librarySelectMissingMega');if(missingButton)missingButton.disabled=missingKeys.length===0||libraryMoveBusy;
+  const missingButton=document.getElementById('librarySelectMissingMega');if(missingButton)missingButton.disabled=missingKeys.length===0||libraryMoveBusy||libraryDeleteBusy;
   if(!keys.length)closeLibrarySelectionMenu();
 }
 function renderLibrarySelection(){
@@ -1644,17 +1661,36 @@ function renderLibrarySelection(){
   if(count)count.textContent=`${files.length} file${files.length===1?'':'s'} · ${fmtBytes(totalBytes(files))}`;
   const move=document.getElementById('libraryMoveBtn');
   const target=document.getElementById('libraryMoveTarget');
-  if(move){move.disabled=!files.length||libraryMoveBusy;move.textContent=libraryMoveBusy?'Moving…':'Move';}
-  if(target)target.disabled=libraryMoveBusy;
+  const busy=libraryMoveBusy||libraryDeleteBusy;
+  if(move){move.disabled=!files.length||busy;move.textContent=libraryMoveBusy?'Moving…':'Move';}
+  if(target)target.disabled=busy;
   const mega=document.getElementById('libraryMegaBtn');
-  if(mega){const blocked=localFiles.length!==files.length;mega.disabled=!files.length||blocked||libraryMoveBusy;mega.title=blocked?'Local copy required for MEGA upload':'Send selected files to MEGA';}
+  if(mega){const blocked=localFiles.length!==files.length;mega.disabled=!files.length||blocked||busy;mega.title=blocked?'Local copy required for MEGA upload':'Send selected files to MEGA';}
+  const remove=document.getElementById('libraryDeleteBtn');
+  if(remove){remove.disabled=!localFiles.length||busy;remove.textContent=libraryDeleteBusy?'Deleting…':'Delete selected';remove.title=localFiles.length?'Delete selected local files from this server only':'No selected local files to delete';}
   const summary=document.getElementById('megaSelectedSummary');
   if(summary)summary.textContent=localFiles.length?`${localFiles.length} file selected (${fmtBytes(totalBytes(localFiles))}). Automatic mode distributes files by available storage.`:'No local files selected. Select files from Downloads first.';
   const upload=document.getElementById('megaUploadBtn');if(upload)upload.disabled=localFiles.length===0;
   syncLibrarySelectAllButton();syncLibrarySelectionDom();
 }
+async function deleteSelectedLibrary(){
+  const files=selectedLibraryFiles();const localFiles=selectedMegaFiles();
+  if(!localFiles.length||libraryMoveBusy||libraryDeleteBusy)return;
+  if(localFiles.some(file=>file.isDemo)){toast('Delete requires the ReClip server');return;}
+  const skipped=files.length-localFiles.length;
+  const detail=skipped?`\n${skipped} MEGA-only file${skipped===1?' will':'s will'} be skipped.`:'';
+  if(!confirm(`Delete ${localFiles.length} selected local file${localFiles.length===1?'':'s'} from this server?\nFiles and links on MEGA will be kept.${detail}`))return;
+  libraryDeleteBusy=true;renderLibrarySelection();
+  try{
+    const result=await apiJson('/api/library/delete-selected',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({files:files.map(file=>({filename:file.filename,group_id:file.group_id||''}))})});
+    librarySelected.clear();await Promise.all([refreshLibrary(),refreshGroups()]);
+    const skippedText=result.skipped_count?` · ${result.skipped_count} MEGA-only skipped`:'';
+    toast(`${result.deleted_count} local file${result.deleted_count===1?'':'s'} deleted${skippedText}`);
+  }catch(error){toast(error.message||'Delete failed');}
+  finally{libraryDeleteBusy=false;renderLibrarySelection();}
+}
 async function moveSelectedLibrary(){
-  const files=selectedLibraryFiles();if(!files.length||libraryMoveBusy)return;
+  const files=selectedLibraryFiles();if(!files.length||libraryMoveBusy||libraryDeleteBusy)return;
   const target=document.getElementById('libraryMoveTarget')?.value||'';
   libraryMoveBusy=true;renderLibrarySelection();
   try{

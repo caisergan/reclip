@@ -568,6 +568,8 @@
       gap: 8px;
       margin-bottom: 8px;
     }
+    .overall-controls { display: flex; align-items: center; gap: 4px; }
+    .overall-details { display: block; }
     .overall-head span {
       font-size: 0.72rem;
       font-weight: 500;
@@ -584,6 +586,10 @@
       padding: 0 2px;
     }
     .overall-close:hover { color: var(--fg); }
+    .overall-restore { display: none; height: 34px; min-width: 62px; padding: 0 9px; border: 1px solid var(--card-border); border-radius: 9px; background: var(--card); color: var(--fg); box-shadow: 0 8px 24px rgba(0,0,0,.14); font: 600 .62rem 'DM Mono',monospace; cursor: pointer; pointer-events: auto; }
+    .overall-progress.collapsed { right: 6px; bottom: 6px; width: auto; padding: 0; border: 0; background: transparent; box-shadow: none; pointer-events: none; }
+    .overall-progress.collapsed .overall-head,.overall-progress.collapsed .overall-details { display: none; }
+    .overall-progress.collapsed .overall-restore { display: inline-flex; align-items: center; justify-content: center; }
     .overall-sub {
       font-size: 0.62rem;
       color: var(--muted);
@@ -980,6 +986,7 @@
     .mega-selection select { max-width: 112px; color: var(--fg); }
     .mega-selection button:disabled, .mega-selection select:disabled { opacity: .45; cursor: not-allowed; }
     .mega-selection .mega-send { color: #fff; border-color: #d9272e; background: #d9272e; }
+    .mega-selection .delete-selected { color: var(--error); border-color: rgba(217,39,46,.3); background: rgba(217,39,46,.04); }
     .mega-overlay {
       position: fixed;
       inset: 0;
@@ -1274,6 +1281,7 @@
         <select id="libraryMoveTarget" aria-label="Move selected files to group"><option value="">Ungrouped</option></select>
         <button id="libraryMoveBtn" onclick="moveSelectedLibrary()">Move</button>
         <button id="libraryMegaBtn" class="mega-send" onclick="openMega()">Send to MEGA</button>
+        <button id="libraryDeleteBtn" class="delete-selected" onclick="deleteSelectedLibrary()">Delete selected</button>
         <button onclick="clearMegaSelection()">Clear</button>
       </div>
       <div class="library-list" id="libraryList">
@@ -1392,9 +1400,19 @@
       }
     }
 
+    function collapseOverall() {
+      const op = document.getElementById('overall-progress');
+      if (op && op.style.display !== 'none') op.classList.add('collapsed');
+    }
+
+    function expandOverall() {
+      const op = document.getElementById('overall-progress');
+      if (op) op.classList.remove('collapsed');
+    }
+
     function hideOverall() {
       const op = document.getElementById('overall-progress');
-      if (op) op.style.display = 'none';
+      if (op) { op.style.display = 'none'; op.classList.remove('collapsed'); }
     }
 
     async function setConcurrency(n) {
@@ -1532,6 +1550,38 @@
       }
       const move = document.getElementById('libraryMoveBtn');
       if (move) move.disabled = files.length === 0;
+      const remove = document.getElementById('libraryDeleteBtn');
+      if (remove) remove.disabled = localFiles.length === 0;
+    }
+
+    async function deleteSelectedLibrary() {
+      const files = selectedLibraryFiles();
+      const localFiles = selectedMegaFiles();
+      if (!localFiles.length) return;
+      const skipped = files.length - localFiles.length;
+      const detail = skipped ? `\n${skipped} MEGA-only file${skipped === 1 ? ' will' : 's will'} be skipped.` : '';
+      if (!confirm(`Delete ${localFiles.length} selected local file${localFiles.length === 1 ? '' : 's'} from this server?\nFiles and links on MEGA will be kept.${detail}`)) return;
+      const button = document.getElementById('libraryDeleteBtn');
+      if (button) { button.disabled = true; button.textContent = 'Deleting…'; }
+      try {
+        const response = await fetch('/api/library/delete-selected', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            files: files.map(file => ({ filename: file.filename, group_id: file.group_id || '' })),
+          }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.error || 'Delete failed');
+        megaSelected.clear();
+        await refreshLibrary();
+        await refreshGroups();
+      } catch (error) {
+        alert(error.message || 'Delete failed');
+      } finally {
+        if (button) button.textContent = 'Delete selected';
+        renderMegaSelection();
+      }
     }
 
     async function moveSelectedLibrary() {
@@ -2591,10 +2641,10 @@
         <div id="overall-progress" class="overall-progress" style="display:none">
           <div class="overall-head">
             <span id="overall-label">Starting…</span>
-            <button class="overall-close" type="button" onclick="hideOverall()" aria-label="Dismiss">×</button>
+            <div class="overall-controls"><button class="overall-close" type="button" onclick="collapseOverall()" aria-label="Collapse download progress" title="Collapse">⌄</button><button class="overall-close" type="button" onclick="hideOverall()" aria-label="Dismiss download progress" title="Dismiss">×</button></div>
           </div>
-          <div class="progress-track"><div id="overall-fill" class="progress-fill" style="width:0%"></div></div>
-          <div class="overall-sub" id="overall-sub"></div>
+          <div class="overall-details"><div class="progress-track"><div id="overall-fill" class="progress-fill" style="width:0%"></div></div><div class="overall-sub" id="overall-sub"></div></div>
+          <button class="overall-restore" type="button" onclick="expandOverall()" aria-label="Show download progress" title="Show download progress"><span id="overall-mini-label">0%</span></button>
         </div>`;
     }
 
@@ -2766,7 +2816,7 @@
 
       renderDownloadAll();
       const overall = document.getElementById('overall-progress');
-      if (overall) overall.style.display = 'block';
+      if (overall) { overall.style.display = 'block'; overall.classList.remove('collapsed'); }
       const btn = document.querySelector('.dl-all-btn');
       if (btn) { btn.disabled = true; btn.textContent = 'Downloading…'; }
 
@@ -2848,7 +2898,7 @@
           batchPollIv = null;
           const btn = document.querySelector('.dl-all-btn');
           if (btn) { btn.disabled = false; btn.textContent = 'Download missing'; }
-          setTimeout(hideOverall, 6000);
+          setTimeout(collapseOverall, 6000);
         }
       }, 800);
       batchPollIv = iv;
@@ -2863,6 +2913,8 @@
       fill.style.width = pct + '%';
       fill.className = data.finished ? 'progress-fill done' : 'progress-fill';
       label.textContent = `${data.completed}/${data.total} complete · ${Math.round(pct)}%`;
+      const mini = document.getElementById('overall-mini-label');
+      if (mini) mini.textContent = `${Math.round(pct)}%`;
       if (sub) {
         const bits = [];
         if (data.errored) bits.push(`${data.errored} failed`);
@@ -2882,8 +2934,9 @@
         const data = await res.json();
         const ids = (data && data.batches) || [];
         if (!ids.length) return;
-        const op = document.getElementById('overall-progress');
-        if (op) op.style.display = 'block';
+        let op = document.getElementById('overall-progress');
+        if (!op) { renderDownloadAll(); op = document.getElementById('overall-progress'); }
+        if (op) { op.style.display = 'block'; op.classList.remove('collapsed'); }
         // Newest session last — that is the one the user was watching.
         pollBatch(ids[ids.length - 1]);
       } catch {}

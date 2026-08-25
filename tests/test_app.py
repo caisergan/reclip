@@ -97,9 +97,14 @@ class ReClipApiTests(unittest.TestCase):
         self.assertIn(b'id="megaOverlay"', root.data)
         self.assertIn(b'id="librarySelectAllBtn"', root.data)
         self.assertIn(b'id="librarySelectMenu"', root.data)
+        self.assertIn(b'id="libraryDeleteBtn"', root.data)
+        self.assertIn(b'/api/library/delete-selected', root.data)
         self.assertIn(b'Select not on MEGA', root.data)
         self.assertIn(b'Download missing', root.data)
         self.assertIn(b'missingReadyIndexes', root.data)
+        self.assertIn(b'Collapse download progress', root.data)
+        self.assertIn(b'class="overall-restore"', root.data)
+        self.assertIn(b'function collapseOverall()', root.data)
         self.assertIn(b'id="splitFetch"', root.data)
         self.assertIn(b'id="fetchProgress"', root.data)
         self.assertIn(b'id="selectAllBtn"', root.data)
@@ -717,6 +722,57 @@ class ReClipApiTests(unittest.TestCase):
         self.assertFalse(media.exists())
         self.assertEqual(reclip.download_index, {})
         self.assertEqual(self.client.get("/api/library").get_json()["files"], [])
+
+    def test_bulk_library_delete_removes_only_local_copies(self):
+        backed = self.add_download("backed.mp4", "group-a")
+        local_only = self.add_download("local-only.mp4", "group-a")
+        mega_url = "https://mega.nz/file/bulk-node#bulk-key"
+        reclip._record_mega_link({
+            "filename": backed.name,
+            "group_id": "group-a",
+            "source_path": str(backed),
+            "size": backed.stat().st_size,
+            "public_url": mega_url,
+            "remote_path": "reclip/group-a/youtube/backed.mp4",
+            "account_id": "primary",
+            "account_label": "Primary",
+        })
+        payload = {"files": [
+            {"filename": backed.name, "group_id": "group-a"},
+            {"filename": local_only.name, "group_id": "group-a"},
+        ]}
+
+        with patch.object(reclip.mega_helper, "has_active_upload", return_value=True):
+            blocked = self.client.post("/api/library/delete-selected", json=payload)
+        self.assertEqual(blocked.status_code, 409)
+        self.assertTrue(backed.exists())
+        self.assertTrue(local_only.exists())
+
+        deleted = self.client.post("/api/library/delete-selected", json=payload)
+        self.assertEqual(deleted.status_code, 200)
+        result = deleted.get_json()
+        self.assertEqual(result["deleted_count"], 2)
+        self.assertEqual(result["record_retained_count"], 1)
+        self.assertEqual(result["skipped_count"], 0)
+        self.assertFalse(backed.exists())
+        self.assertFalse(local_only.exists())
+
+        files = self.client.get("/api/library").get_json()["files"]
+        self.assertEqual(len(files), 1)
+        self.assertEqual(files[0]["filename"], backed.name)
+        self.assertEqual(files[0]["mega_url"], mega_url)
+        self.assertFalse(files[0]["local_available"])
+
+        skipped = self.client.post("/api/library/delete-selected", json={
+            "files": [{"filename": backed.name, "group_id": "group-a"}],
+        })
+        self.assertEqual(skipped.status_code, 200)
+        self.assertEqual(skipped.get_json()["deleted_count"], 0)
+        self.assertEqual(skipped.get_json()["skipped_count"], 1)
+        self.assertEqual(
+            self.client.get("/api/library").get_json()["files"][0]["mega_url"],
+            mega_url,
+        )
 
     def test_library_delete_is_group_specific_and_blocks_active_mega_upload(self):
         first_dir = _DOWNLOAD_DIR / "group-a"
