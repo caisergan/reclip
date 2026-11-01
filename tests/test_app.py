@@ -22,7 +22,7 @@ os.environ["RECLIP_RCLONE"] = "/bin/false"
 import app as reclip  # noqa: E402
 
 
-class ReClipApiTests(unittest.TestCase):
+class _ReClipTestBase(unittest.TestCase):
     def setUp(self):
         reclip.app.config.update(TESTING=True)
         self.client = reclip.app.test_client()
@@ -91,6 +91,8 @@ class ReClipApiTests(unittest.TestCase):
             time.sleep(0.01)
         self.fail("fetch batch did not finish")
 
+
+class ReClipApiTests(_ReClipTestBase):
     def test_overhaul_is_index_and_legacy_ui_remains_available(self):
         root = self.client.get("/")
         self.assertEqual(root.status_code, 200)
@@ -1093,6 +1095,306 @@ class ReClipApiTests(unittest.TestCase):
         finally:
             reclip.gate.set_limit(original)
             reclip.fetch_gate.set_limit(original_fetch)
+
+
+
+class DownloadPipelineTests(_ReClipTestBase):
+    """Regression tests for the download queue and worker pipeline."""
+
+    def _no_media_probes(self):
+        return patch.multiple(reclip, _probe_duration=lambda _path: None,
+                              _make_thumb=lambda _path: None)
+
+    def _queued_job(self, url="https://example.test/clip", title="Clip", **fields):
+        job_id = reclip.new_job(url, title, fields.pop("format", "video"),
+                                fields.pop("format_id", None),
+                                group_id=fields.pop("group_id", None))
+        reclip.jobs[job_id].update(fields)
+        return job_id, reclip.jobs[job_id]
+
+    def test_gate_admits_parked_jobs_in_submission_order(self):
+        gate = reclip.DownloadGate(1, 4)
+        self.assertTrue(gate.acquire({"seq": 1}))
+        admitted = []
+
+        def worker(job):
+            if gate.acquire(job):
+                admitted.append(job["seq"])
+                gate.release()
+
+        threads = []
+        for seq in (4, 2, 3):  # threads reach the gate out of order
+            thread = threading.Thread(target=worker, args=({"seq": seq},))
+            thread.start()
+            threads.append(thread)
+        deadline = time.time() + 2
+        while len(gate._waiting) < 3 and time.time() < deadline:
+            time.sleep(0.01)
+        gate.release()
+        for thread in threads:
+            thread.join(2)
+        self.assertEqual(admitted, [2, 3, 4])
+
+    def test_cancelled_waiter_leaves_the_gate_queue(self):
+        gate = reclip.DownloadGate(1, 4)
+        self.assertTrue(gate.acquire({"seq": 1}))
+        waiter = {"seq": 2}
+        result = []
+        thread = threading.Thread(target=lambda: result.append(gate.acquire(waiter)))
+        thread.start()
+        time.sleep(0.05)
+        waiter["cancelled"] = True
+        gate.wake_all()
+        thread.join(2)
+        self.assertEqual(result, [False])
+        self.assertEqual(gate._waiting, [])
+        gate.release()
+        self.assertTrue(gate.acquire({"seq": 3}), "a cancelled waiter must not block the next job")
+
+    def test_multi_file_progress_never_moves_backwards(self):
+        def line(filename, done, total):
+            return reclip.PROGRESS_SENTINEL + reclip.json.dumps({
+                "filename": filename, "downloaded_bytes": done, "total_bytes": total,
+                "_speed_str": "1.0MiB/s", "_eta_str": "00:01",
+            })
+
+        aggregate = reclip._ProgressAggregator()
+        seen = []
+        for raw in (line("v.f137.mp4", 0, 1000), line("v.f137.mp4", 500, 1000),
+                    line("v.f137.mp4", 1000, 1000), line("v.f140.m4a", 10, 100),
+                    line("v.f140.m4a", 100, 100)):
+            percent, downloaded, total = aggregate.update(reclip.parse_progress_line(raw))
+            seen.append(percent)
+        self.assertEqual(seen, sorted(seen), "progress must be monotonic across files")
+        self.assertEqual(seen[1], 50.0)
+        self.assertEqual(seen[-1], 100.0)
+        self.assertEqual((downloaded, total), ("1.1 KiB", "1.1 KiB"))
+
+    def test_silent_download_is_killed_as_stalled_not_by_total_time(self):
+        job = {"status": "downloading"}
+        started = time.monotonic()
+        _rc, tail, reason = reclip.run_ytdlp_streaming(
+            job, ["sh", "-c", "echo starting; sleep 30"], timeout=0, stall_timeout=1
+        )
+        self.assertEqual(reason, "stalled")
+        self.assertLess(time.monotonic() - started, 10)
+        self.assertEqual(tail, ["starting"])
+        self.assertIsNone(job["proc"])
+
+        # Steady output keeps a run alive no matter how long it takes overall.
+        _rc, _tail, reason = reclip.run_ytdlp_streaming(
+            {"status": "downloading"},
+            ["sh", "-c", "for i in 1 2 3 4; do echo tick; sleep 0.5; done"],
+            timeout=0, stall_timeout=1,
+        )
+        self.assertIsNone(reason)
+
+    def test_retry_requeues_the_same_job_with_its_original_request(self):
+        job_id, job = self._queued_job(format="audio", format_id="251", group_id="music")
+        job.update(status="error", error="boom", future=None)
+        first_seq = job["seq"]
+        partial = _DOWNLOAD_DIR / f"{job_id}.mp3.part"
+        partial.write_bytes(b"partial")
+
+        with patch.object(reclip.download_pool, "submit") as submit:
+            response = self.client.post(f"/api/retry/{job_id}")
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        self.assertEqual((data["job_id"], data["status"], data["attempt"]), (job_id, "queued", 2))
+        self.assertIsNone(data["error"])
+        submit.assert_called_once_with(reclip.run_download, job_id, job["url"], "audio", "251")
+        self.assertGreater(job["seq"], first_seq, "a retry joins the back of the queue")
+        self.assertFalse(partial.exists())
+
+        self.assertEqual(self.client.post(f"/api/retry/{job_id}").status_code, 409)
+        self.assertEqual(self.client.post("/api/retry/missing").status_code, 404)
+
+    def test_dismiss_forgets_records_but_keeps_library_files(self):
+        path = self.add_download("kept.mp4")
+        done_id, done = self._queued_job()
+        done.update(status="done", file=str(path), filename="kept.mp4")
+        failed_id, failed = self._queued_job(url="https://example.test/failed")
+        failed["status"] = "error"
+
+        response = self.client.post(
+            "/api/jobs/dismiss", json={"job_ids": [done_id, failed_id, "missing"]}
+        )
+        self.assertEqual(response.get_json()["dismissed"], 2)
+        self.assertNotIn(done_id, reclip.jobs)
+        self.assertNotIn(failed_id, reclip.jobs)
+        self.assertTrue(path.exists())
+        library = self.client.get("/api/library").get_json()
+        self.assertEqual([item["filename"] for item in library["files"]], ["kept.mp4"])
+        self.assertEqual(library["jobs"], [])
+
+    def test_bulk_job_status_reports_unknown_ids_as_null(self):
+        job_id, _job = self._queued_job()
+        response = self.client.post("/api/jobs/status", json={"job_ids": [job_id, "gone"]})
+        states = response.get_json()["jobs"]
+        self.assertEqual(states[job_id]["status"], "queued")
+        self.assertEqual(states[job_id]["attempt"], 1)
+        self.assertIsNone(states["gone"])
+        self.assertEqual(self.client.post("/api/jobs/status", json={}).status_code, 400)
+
+    def test_library_lists_live_jobs_in_submission_order(self):
+        ids = [self._queued_job(url=f"https://example.test/{n}")[0] for n in range(6)]
+        listed = [job["job_id"] for job in self.client.get("/api/library").get_json()["jobs"]]
+        self.assertEqual(listed, ids)
+
+    def test_concurrent_duplicate_finishing_second_reuses_the_first_file(self):
+        first = self.add_download("first.mp4", video_id="dup-1")
+        job_id, job = self._queued_job(
+            url="https://example.test/dup-1", title="Second", format_id="best",
+            video_id="dup-1", extractor="youtube",
+        )
+        staged = _DOWNLOAD_DIR / f"{job_id}.mp4"
+        staged.write_bytes(b"duplicate bytes")
+        with self._no_media_probes():
+            reclip._finalize_download(job, job_id, job["url"], "video", "best")
+        self.assertEqual((job["status"], job["deduped"]), ("done", True))
+        self.assertEqual(job["file"], str(first))
+        self.assertFalse(staged.exists())
+        self.assertFalse((_DOWNLOAD_DIR / "Second.mp4").exists(), "no untracked second copy")
+
+    def test_download_for_a_deleted_group_is_registered_ungrouped(self):
+        job_id, job = self._queued_job(title="Orphan Clip", group_id="deleted-group")
+        (_DOWNLOAD_DIR / f"{job_id}.mp4").write_bytes(b"clip")
+        with self._no_media_probes():
+            reclip._finalize_download(job, job_id, job["url"], "video", None)
+        self.assertIsNone(job["group_id"])
+        self.assertEqual(Path(job["file"]).parent, _DOWNLOAD_DIR)
+        library = self.client.get("/api/library").get_json()["files"]
+        self.assertEqual([(f["filename"], f["group_id"]) for f in library], [("Orphan Clip.mp4", "")])
+
+    def test_stop_during_finalization_leaves_no_library_entry_or_files(self):
+        job_id, job = self._queued_job(url="https://example.test/late-stop")
+
+        def finished_download(_job, jid, _cmd, _timeout_msg=None):
+            (_DOWNLOAD_DIR / f"{jid}.mp4").write_bytes(b"\x00" * 128)
+            return True, []
+
+        def probe_then_stop(_path):
+            job["cancelled"] = True
+            return None
+
+        with patch.object(reclip, "_attempt_download", side_effect=finished_download), \
+             patch.object(reclip, "_probe_duration", side_effect=probe_then_stop), \
+             patch.object(reclip, "_make_thumb", return_value=None):
+            reclip.run_download(job_id, job["url"], "video", None)
+        self.assertEqual(job["status"], "cancelled")
+        self.assertEqual(list(_DOWNLOAD_DIR.glob(f"{job_id}.*")), [])
+        self.assertEqual(self.client.get("/api/library").get_json()["files"], [])
+
+    def test_provider_resolved_stream_skips_the_wrapper_page_attempt(self):
+        attempted = []
+
+        def fake_attempt(_job, jid, cmd, _timeout_msg=None):
+            attempted.append(cmd[-1])
+            (_DOWNLOAD_DIR / f"{jid}.mp4").write_bytes(b"\x00" * 128)
+            return True, []
+
+        job_id, job = self._queued_job(url="https://host.test/e/abc", title="Provider Clip")
+        resolved = {"media_url": "https://cdn.test/v.mp4", "referer": "https://host.test/"}
+        with patch.object(reclip, "_provider_resolver_applies", return_value=True), \
+             patch.object(reclip, "resolve_provider", return_value=resolved), \
+             patch.object(reclip, "_attempt_download", side_effect=fake_attempt), \
+             self._no_media_probes():
+            reclip.run_download(job_id, job["url"], "video", None)
+        self.assertEqual(attempted, ["https://cdn.test/v.mp4"])
+        self.assertEqual(job["status"], "done")
+        self.assertEqual(job["filename"], "Provider Clip.mp4")
+
+    def test_single_stream_resumes_only_when_ranges_are_supported(self):
+        fake_bin = _DOWNLOAD_DIR / "fake-curl-bin"
+        fake_bin.mkdir()
+        log = _DOWNLOAD_DIR / "curl-args.log"
+        (fake_bin / "curl").write_text(
+            "#!/usr/bin/env python3\n"
+            "import os, sys\n"
+            "args = sys.argv[1:]\n"
+            "open(os.environ['FAKE_CURL_LOG'], 'a').write(' '.join(args) + '\\n')\n"
+            "offset = int(args[args.index('--continue-at') + 1])\n"
+            "with open(args[args.index('--output') + 1], 'ab' if offset else 'wb') as out:\n"
+            "    out.write(b'NEW')\n"
+        )
+        (fake_bin / "curl").chmod(0o755)
+        part = _DOWNLOAD_DIR / "stream.part"
+        env = {"PATH": str(fake_bin) + os.pathsep + os.environ.get("PATH", ""),
+               "FAKE_CURL_LOG": str(log)}
+        with patch.dict(os.environ, env):
+            part.write_bytes(b"OLD")
+            ok = reclip._curl_single_stream(
+                {}, str(part), "https://cdn.test/a", None,
+                {"total": 100, "range_supported": False},
+            )
+            self.assertTrue(ok)
+            self.assertEqual(part.read_bytes(), b"NEW", "unresumable partial is discarded")
+
+            part.write_bytes(b"OLD")
+            ok = reclip._curl_single_stream(
+                {}, str(part), "https://cdn.test/a", None,
+                {"total": 100, "range_supported": True},
+            )
+            self.assertTrue(ok)
+            self.assertEqual(part.read_bytes(), b"OLDNEW")
+        calls = log.read_text().splitlines()
+        self.assertIn("--continue-at 0", calls[0])
+        self.assertIn("--continue-at 3", calls[1])
+        self.assertIn("--speed-time", calls[0])
+        self.assertNotIn("--max-time", calls[0], "no total cap unless configured")
+
+    def test_curl_failures_are_classified_for_retry(self):
+        cases = {
+            "curl: (22) The requested URL returned error: 403": (22, True, "HTTP 403"),
+            "curl: (22) The requested URL returned error: 404": (22, False, "404"),
+            "curl: (22) The requested URL returned error: 503": (22, True, "503"),
+            "curl: (28) Operation too slow. Less than 1 bytes/sec transferred": (28, True, "stalled"),
+            "curl: (56) Recv failure: Connection reset by peer": (56, True, "Recv failure"),
+        }
+        for tail, (rc, retryable, fragment) in cases.items():
+            with self.subTest(tail=tail):
+                message, is_retryable = reclip._curl_failure(tail, rc, "video")
+                self.assertEqual(is_retryable, retryable)
+                self.assertIn(fragment, message)
+
+    def test_direct_placeholder_is_discarded_and_marked_retryable(self):
+        def stage_placeholder(_job, part_path, *_args):
+            Path(part_path).write_bytes(b"GIF89a" + b"\x00" * 100)
+            return True
+
+        job = {"format": "video"}
+        with patch.object(reclip, "_media_transfer_info",
+                          return_value={"total": 106, "range_supported": True}), \
+             patch.object(reclip, "_segmented_curl_download", side_effect=stage_placeholder):
+            self.assertFalse(reclip._attempt_direct(
+                job, "placeholder-job", "https://cdn.test/v.mp4", None))
+        self.assertTrue(job["retryable"])
+        self.assertIn("placeholder", job["error"])
+        self.assertFalse((_DOWNLOAD_DIR / "placeholder-job.mp4.part").exists())
+
+    def test_dismissed_fetch_batch_is_stopped_and_not_restored(self):
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow_info(url):
+            started.set()
+            release.wait(2)
+            return {"title": url, "formats": []}
+
+        with patch.object(reclip, "fetch_video_info", side_effect=slow_info):
+            batch_id = self.client.post(
+                "/api/fetch", json={"urls": ["https://example.test/a", "https://example.test/b"]}
+            ).get_json()["batch_id"]
+            started.wait(2)
+            response = self.client.post("/api/fetch/dismiss", json={"batch_ids": [batch_id, "nope"]})
+            release.set()
+        self.assertEqual(response.get_json()["dismissed"], 1)
+        self.assertEqual(self.client.get(f"/api/fetch/{batch_id}").status_code, 404)
+        self.assertNotIn(batch_id, self.client.get("/api/library").get_json()["fetch_batches"])
+
+    def test_batch_endpoint_rejects_malformed_items(self):
+        self.assertEqual(self.client.post("/api/batch", json={"items": "nope"}).status_code, 400)
+        self.assertEqual(self.client.post("/api/batch", json={"items": [{"url": ""}, 3]}).status_code, 400)
 
 
 if __name__ == "__main__":
