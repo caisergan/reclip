@@ -13,6 +13,8 @@ services:
       RECLIP_MEGA_DIR: /app/downloads/.mega
       RECLIP_MEGA_CONCURRENT: "2"
       RECLIP_MEGA_SAFETY_MB: "16"
+      # Telegram login session/config also lives in the downloads volume.
+      RECLIP_TELEGRAM_DIR: /app/downloads/.telegram
     volumes:
       - reclip-downloads:/app/downloads
       - ./config:/app/config:ro

@@ -16,3 +16,7 @@ config/
 
 # locally installed MEGA-enabled rclone binary
 .tools/
+
+# Telegram login sessions (full account access — never commit)
+*.session
+*.session-journal

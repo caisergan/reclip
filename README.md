@@ -20,6 +20,7 @@ https://github.com/user-attachments/assets/419d3e50-c933-444b-8cab-a9724986ba05
 - Multi-account MEGA helper with storage quota checks and transfer progress
 - Automatic distribution of selected files across MEGA accounts by free space
 - Persistent public MEGA links and remote-only library records after local deletion
+- Telegram upload suite: post selected videos as albums with one caption, from your own account
 - Clean, responsive UI — no frameworks, no build step
 - Modular Flask backend with persistent download and upload history
 
@@ -121,6 +122,38 @@ Optional settings:
 | `RECLIP_MEGA_DIR` | `<downloads>/.mega` | Persistent helper state directory |
 | `RECLIP_RCLONE` | `rclone` | Path to a MEGA-enabled rclone binary |
 | `RECLIP_NO_RCLONE_INSTALL` | unset | Disable local rclone auto-install in `reclip.sh` |
+
+## Telegram Upload Suite
+
+Post downloads to your Telegram channels, groups or Saved Messages as albums,
+through your own Telegram account: storage is unlimited and files never expire.
+Open it with the Telegram button in the Downloads header, or select videos in
+Downloads and press **Telegram**.
+
+- **Sign in from the browser.** Create an app once at
+  <https://my.telegram.org/apps>, paste its `api_id` and `api_hash`, then enter
+  your phone number, the login code and (if enabled) your 2FA password.
+- **Pick and order videos.** Search and filter the library, hide videos you
+  already sent, and drag (or use the arrows) to set the album order.
+- **One caption for the whole post.** Plain text, Markdown or HTML, with a
+  formatting toolbar and a live counter against Telegram's limit (1024
+  characters, 4096 with Premium). The text appears under the album.
+- **Albums.** Telegram allows 10 videos per message, so larger selections are
+  split into balanced albums (12 → 6 + 6) and the caption goes on the first.
+  Files over 2 GB (4 GB with Premium) are split into parts with ffmpeg, without
+  re-encoding.
+- **Queue and history.** Posts upload one at a time with live progress and can be
+  cancelled, retried or reused. Posted videos get a Telegram badge and an
+  **Open in Telegram** link in Downloads.
+
+A command-line uploader shares the same login:
+`python telegram_helper.py login | chats | use <chat> | upload FILE...`. Stop
+ReClip before using it, since both use the same session database.
+
+State lives in `RECLIP_TELEGRAM_DIR` (default `<downloads>/.telegram`). The
+`reclip.session` file in it is a full login to your Telegram account, so keep it
+private. Revoke it any time from Telegram → Settings → Devices, or press
+**Sign out** in the suite.
 
 ## Supported Sites
 
