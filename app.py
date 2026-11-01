@@ -20,6 +20,7 @@ from urllib.parse import quote, unquote, urljoin, urlparse
 from urllib.request import Request, urlopen
 from flask import Flask, request, jsonify, send_file, render_template
 from mega_helper import MegaHelper, MegaHelperError, is_mega_public_url
+from telegram_helper import TelegramHelperError, TelegramService
 
 app = Flask(__name__)
 # Files are downloaded to and kept on the server here (override with
@@ -1334,7 +1335,10 @@ CREATE TABLE IF NOT EXISTS downloads (
   mega_remote_path TEXT,
   mega_account_id TEXT,
   mega_account_label TEXT,
-  mega_uploaded_at REAL
+  mega_uploaded_at REAL,
+  telegram_url TEXT,
+  telegram_chat TEXT,
+  telegram_posted_at REAL
 );
 CREATE TABLE IF NOT EXISTS groups (
   id         TEXT PRIMARY KEY,
@@ -1378,6 +1382,9 @@ def _init_db():
                 "mega_account_id": "TEXT",
                 "mega_account_label": "TEXT",
                 "mega_uploaded_at": "REAL",
+                "telegram_url": "TEXT",
+                "telegram_chat": "TEXT",
+                "telegram_posted_at": "REAL",
             }
             for column, kind in download_migrations.items():
                 if column not in cols:
@@ -1423,6 +1430,7 @@ def _row_to_entry(row):
         _key, file_, filename, title, url, extractor, video_id, created_at,
         duration, thumb, group_id, size_bytes, local_deleted_at, mega_url,
         mega_remote_path, mega_account_id, mega_account_label, mega_uploaded_at,
+        telegram_url, telegram_chat, telegram_posted_at,
     ) = row
     return {
         "file": file_,
@@ -1442,6 +1450,9 @@ def _row_to_entry(row):
         "mega_account_id": mega_account_id or None,
         "mega_account_label": mega_account_label or None,
         "mega_uploaded_at": mega_uploaded_at or None,
+        "telegram_url": telegram_url or None,
+        "telegram_chat": telegram_chat or None,
+        "telegram_posted_at": telegram_posted_at or None,
     }
 
 
@@ -1455,7 +1466,8 @@ def load_index():
                 for row in conn.execute(
                     "SELECT key,file,filename,title,url,extractor,video_id,created_at,"
                     "duration,thumb,group_id,size_bytes,local_deleted_at,mega_url,"
-                    "mega_remote_path,mega_account_id,mega_account_label,mega_uploaded_at "
+                    "mega_remote_path,mega_account_id,mega_account_label,mega_uploaded_at,"
+                    "telegram_url,telegram_chat,telegram_posted_at "
                     "FROM downloads"):
                     data[row[0]] = _row_to_entry(row)
             finally:
@@ -1478,15 +1490,18 @@ def _save_index_locked(strict=False):
                         "INSERT INTO downloads "
                         "(key,file,filename,title,url,extractor,video_id,created_at,"
                         "duration,thumb,group_id,size_bytes,local_deleted_at,mega_url,"
-                        "mega_remote_path,mega_account_id,mega_account_label,mega_uploaded_at) "
-                        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        "mega_remote_path,mega_account_id,mega_account_label,mega_uploaded_at,"
+                        "telegram_url,telegram_chat,telegram_posted_at) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         [(k, e.get("file", ""), e.get("filename"), e.get("title"),
                           e.get("url"), e.get("extractor"), e.get("video_id"),
                           e.get("created_at") or now, e.get("duration"), e.get("thumb"),
                           e.get("group_id"), e.get("size_bytes"),
                           e.get("local_deleted_at"), e.get("mega_url"),
                           e.get("mega_remote_path"), e.get("mega_account_id"),
-                          e.get("mega_account_label"), e.get("mega_uploaded_at"))
+                          e.get("mega_account_label"), e.get("mega_uploaded_at"),
+                          e.get("telegram_url"), e.get("telegram_chat"),
+                          e.get("telegram_posted_at"))
                          for k, e in download_index.items()])
             finally:
                 conn.close()
@@ -1721,6 +1736,9 @@ def _register_download_locked(video_id, extractor, title, url, format_choice, fo
             "mega_account_id": previous.get("mega_account_id"),
             "mega_account_label": previous.get("mega_account_label"),
             "mega_uploaded_at": previous.get("mega_uploaded_at"),
+            "telegram_url": previous.get("telegram_url"),
+            "telegram_chat": previous.get("telegram_chat"),
+            "telegram_posted_at": previous.get("telegram_posted_at"),
         }
         for key in keys:
             download_index[key] = entry
@@ -1748,9 +1766,10 @@ def _library_identity_for_path(path):
                 entry.get("group_id") or "")
 
 
-def _mega_upload_active(filename, group_id=""):
-    helper = globals().get("mega_helper")
-    return bool(helper and helper.has_active_upload(filename, group_id))
+def _upload_active(filename, group_id=""):
+    """Whether a MEGA or Telegram upload still needs this file at its path."""
+    helpers = (globals().get("mega_helper"), globals().get("telegram_service"))
+    return any(h and h.has_active_upload(filename, group_id) for h in helpers)
 
 
 class LibraryMoveError(Exception):
@@ -1870,10 +1889,10 @@ def _move_library_items(selection, target_group_id):
 
         for item in items:
             source = item["from"]
-            if source["group_id"] != target_group_id and _mega_upload_active(
+            if source["group_id"] != target_group_id and _upload_active(
                     source["filename"], source["group_id"]):
                 raise LibraryMoveError(
-                    f"Wait for the MEGA upload and link to finish: {source['filename']}",
+                    f"Wait for the MEGA/Telegram upload to finish: {source['filename']}",
                     409,
                 )
 
@@ -1999,9 +2018,9 @@ def _delete_local_library_items(selection):
         local_items = [item for item in items if item["local_available"]]
         for item in local_items:
             source = item["from"]
-            if _mega_upload_active(source["filename"], source["group_id"]):
+            if _upload_active(source["filename"], source["group_id"]):
                 raise LibraryMoveError(
-                    f"Wait for the MEGA upload and link to finish: {source['filename']}",
+                    f"Wait for the MEGA/Telegram upload to finish: {source['filename']}",
                     409,
                 )
 
@@ -3594,8 +3613,8 @@ def delete_download(job_id):
         path = job.get("file") if job else None
         if path:
             filename, gid = _library_identity_for_path(path)
-            if _mega_upload_active(filename, gid):
-                return jsonify({"error": "Wait for the MEGA upload and link to finish"}), 409
+            if _upload_active(filename, gid):
+                return jsonify({"error": "Wait for the MEGA/Telegram upload to finish"}), 409
         try:
             delete_job(job_id)
         except OSError as exc:
@@ -3685,6 +3704,9 @@ def library():
                 "mega_account_id": entry.get("mega_account_id"),
                 "mega_account_label": entry.get("mega_account_label"),
                 "mega_uploaded_at": entry.get("mega_uploaded_at"),
+                "telegram_url": entry.get("telegram_url"),
+                "telegram_chat": entry.get("telegram_chat"),
+                "telegram_posted_at": entry.get("telegram_posted_at"),
             }
             if local_available and not entry.get("duration"):
                 missing_duration.append(p)
@@ -3833,8 +3855,8 @@ def library_delete():
                 return jsonify({"error": "Library item is ambiguous"}), 409
             path = next(iter(paths))
         _matched_name, matched_gid = _library_identity_for_path(path)
-        if _mega_upload_active(name, matched_gid):
-            return jsonify({"error": "Wait for the MEGA upload and link to finish"}), 409
+        if _upload_active(name, matched_gid):
+            return jsonify({"error": "Wait for the MEGA/Telegram upload to finish"}), 409
         try:
             retained = _remove_local_library_file(path)
         except OSError as exc:
@@ -4046,6 +4068,54 @@ def _record_mega_link_locked(upload):
             _save_index_locked(strict=True)
 
 
+
+# ---- Telegram upload suite ----------------------------------------------
+# Same contract as MEGA: the browser names library items by filename + group
+# id and the server maps them to paths, so no arbitrary path is accepted.
+def _resolve_telegram_files(selection):
+    try:
+        clean = _clean_library_selections(selection)
+        with library_mutation_lock, index_lock:
+            resolved = []
+            for item in _resolve_library_items_locked(clean):
+                name = item["from"]["filename"]
+                if not item["local_available"]:
+                    raise TelegramHelperError(f"File is not on this server anymore: {name}", 404)
+                try:
+                    size = os.path.getsize(item["path"])
+                except OSError:
+                    raise TelegramHelperError(f"File is not on this server anymore: {name}", 404)
+                resolved.append({
+                    "path": item["path"],
+                    "filename": name,
+                    "group_id": item["from"]["group_id"],
+                    "size": size,
+                })
+            return resolved
+    except LibraryMoveError as exc:
+        raise TelegramHelperError(exc.message, exc.status) from exc
+
+
+def _record_telegram_post(post):
+    """Mark every library row of a posted file with the post's first link."""
+    values = {
+        "telegram_url": (post.get("links") or [None])[0],
+        "telegram_chat": post.get("chat_title") or None,
+        "telegram_posted_at": post.get("finished_at") or time.time(),
+    }
+    wanted = {(i.get("group_id") or "", i.get("filename") or "") for i in post.get("items", [])}
+    with library_mutation_lock, index_lock:
+        changed = False
+        for entry in download_index.values():
+            if ((entry.get("group_id") or ""), (entry.get("filename") or "")) not in wanted:
+                continue
+            for field, value in values.items():
+                if entry.get(field) != value:
+                    entry[field] = value
+                    changed = True
+        if changed:
+            _save_index_locked()
+
 _init_db()
 load_index()
 _load_groups()
@@ -4058,6 +4128,8 @@ mega_helper = MegaHelper(
 )
 mega_helper.reconcile_links()
 app.register_blueprint(mega_helper.blueprint)
+telegram_service = TelegramService(_resolve_telegram_files, on_posted=_record_telegram_post)
+app.register_blueprint(telegram_service.blueprint)
 
 
 if __name__ == "__main__":

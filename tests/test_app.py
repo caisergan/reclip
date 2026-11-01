@@ -16,6 +16,7 @@ _DOWNLOAD_DIR.mkdir()
 os.environ["RECLIP_DOWNLOAD_DIR"] = str(_DOWNLOAD_DIR)
 os.environ["RECLIP_DB"] = str(_DOWNLOAD_DIR / "reclip.db")
 os.environ["RECLIP_MEGA_DIR"] = str(_DOWNLOAD_DIR / ".mega")
+os.environ["RECLIP_TELEGRAM_DIR"] = str(Path(_TEST_ROOT.name) / ".telegram")
 os.environ["RECLIP_RCLONE"] = "/bin/false"
 
 import app as reclip  # noqa: E402
@@ -95,6 +96,9 @@ class ReClipApiTests(unittest.TestCase):
         self.assertEqual(root.status_code, 200)
         self.assertIn(b"<title>ReClip</title>", root.data)
         self.assertIn(b'id="megaOverlay"', root.data)
+        self.assertIn(b'id="tgOverlay"', root.data)
+        self.assertIn(b'id="libraryTelegramBtn"', root.data)
+        self.assertIn(b'/api/telegram', root.data)
         self.assertIn(b'id="librarySelectAllBtn"', root.data)
         self.assertIn(b'id="librarySelectMenu"', root.data)
         self.assertIn(b'id="libraryDeleteBtn"', root.data)
@@ -808,6 +812,43 @@ class ReClipApiTests(unittest.TestCase):
         self.assertEqual([(item["group_id"], item["filename"]) for item in files],
                          [("group-b", "same.mp4")])
 
+    def test_telegram_post_marks_library_items_and_survives_reload(self):
+        posted = self.add_download("posted.mp4", "group-a")
+        self.add_download("other.mp4", "group-a")
+        resolved = reclip._resolve_telegram_files([{"filename": "posted.mp4", "group_id": "group-a"}])
+        self.assertEqual(resolved, [{"path": str(posted), "filename": "posted.mp4",
+                                     "group_id": "group-a", "size": len(b"video")}])
+        with self.assertRaises(reclip.TelegramHelperError):
+            reclip._resolve_telegram_files([{"filename": "../etc/passwd", "group_id": ""}])
+
+        reclip._record_telegram_post({
+            "items": [{"filename": "posted.mp4", "group_id": "group-a"}],
+            "links": ["https://t.me/c/777/101"],
+            "chat_title": "Archive",
+            "finished_at": 1700000000.0,
+        })
+        reclip.load_index()
+        files = {f["filename"]: f for f in self.client.get("/api/library").get_json()["files"]}
+        self.assertEqual(files["posted.mp4"]["telegram_url"], "https://t.me/c/777/101")
+        self.assertEqual(files["posted.mp4"]["telegram_chat"], "Archive")
+        self.assertEqual(files["posted.mp4"]["telegram_posted_at"], 1700000000.0)
+        self.assertIsNone(files["other.mp4"]["telegram_url"])
+
+    def test_active_telegram_post_blocks_local_delete(self):
+        path = self.add_download("busy.mp4", "group-a")
+        with patch.object(reclip.telegram_service, "has_active_upload", return_value=True):
+            blocked = self.client.post("/api/library/delete-selected",
+                                       json={"files": [{"filename": "busy.mp4", "group_id": "group-a"}]})
+        self.assertEqual(blocked.status_code, 409)
+        self.assertIn("Telegram", blocked.get_json()["error"])
+        self.assertTrue(path.exists())
+
+    def test_telegram_status_reports_setup_needed(self):
+        status = self.client.get("/api/telegram/status").get_json()
+        self.assertTrue(status["available"])
+        self.assertFalse(status["configured"])
+        self.assertFalse(status["authorized"])
+
     def test_download_schema_contains_persistent_mega_fields(self):
         with reclip._db_lock:
             conn = reclip._db_connect()
@@ -818,6 +859,7 @@ class ReClipApiTests(unittest.TestCase):
         expected = {
             "size_bytes", "local_deleted_at", "mega_url", "mega_remote_path",
             "mega_account_id", "mega_account_label", "mega_uploaded_at",
+            "telegram_url", "telegram_chat", "telegram_posted_at",
         }
         self.assertTrue(expected.issubset(columns))
 
