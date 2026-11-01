@@ -15,6 +15,7 @@ https://github.com/user-attachments/assets/419d3e50-c933-444b-8cab-a9724986ba05
 - MP4 video or MP3 audio extraction
 - Quality/resolution picker
 - Bulk downloads — paste multiple URLs at once
+- GoFile folders and files: one paste lists every file, including subfolders
 - Multi-select completed files and move them between groups
 - Automatic URL deduplication
 - Multi-account MEGA helper with storage quota checks and transfer progress
@@ -155,6 +156,30 @@ State lives in `RECLIP_TELEGRAM_DIR` (default `<downloads>/.telegram`). The
 private. Revoke it any time from Telegram → Settings → Devices, or press
 **Sign out** in the suite.
 
+## GoFile
+
+Paste a `https://gofile.io/d/<code>` link (a folder or a single file) and hit
+**Fetch**. ReClip lists every file in the folder and its subfolders as its own
+card, so **Download missing** pulls the whole folder. Files keep their original
+names and are checked against GoFile's listed size.
+
+GoFile marks some files as unavailable, and gofile.io itself then disables
+preview and download for them. ReClip shows GoFile's reason on the card instead
+of saving an error page:
+
+- **Overloaded server** — free downloads of that file are paused for a while;
+  press **Retry** later.
+- **Cold storage** — the file can no longer be downloaded without GoFile Premium.
+- **Password-protected, private, expired or deleted** links.
+
+GoFile signs its listing requests with a script it rotates, and a wrong
+signature gets the caller's IP banned for an hour. ReClip therefore runs
+GoFile's own current script in an isolated V8 sandbox
+([mini-racer](https://github.com/bpcreech/PyMiniRacer)), pins its clock to
+GoFile's server time, and refuses to send a request if the script starts using
+inputs it doesn't recognize. It also caches listings briefly and backs off for
+several minutes after a rate limit or refusal.
+
 ## Supported Sites
 
 Anything [yt-dlp supports](https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md), including:
@@ -167,7 +192,7 @@ YouTube, TikTok, Instagram, Twitter/X, Reddit, Facebook, Vimeo, Twitch, Dailymot
 - **Frontend:** Vanilla HTML/CSS/JS templates (no framework or build step)
 - **Download engine:** [yt-dlp](https://github.com/yt-dlp/yt-dlp) + [ffmpeg](https://ffmpeg.org/)
 - **MEGA engine:** [rclone](https://rclone.org/mega/)
-- **Python dependencies:** 2 (Flask, yt-dlp)
+- **Python dependencies:** Flask, yt-dlp, Telethon + cryptg (Telegram), mini-racer (GoFile)
 
 ## Disclaimer
 
