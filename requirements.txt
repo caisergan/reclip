@@ -2,3 +2,4 @@ flask
 yt-dlp
 telethon
 cryptg
+mini-racer

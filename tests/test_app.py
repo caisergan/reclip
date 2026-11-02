@@ -1097,7 +1097,6 @@ class ReClipApiTests(_ReClipTestBase):
             reclip.fetch_gate.set_limit(original_fetch)
 
 
-
 class DownloadPipelineTests(_ReClipTestBase):
     """Regression tests for the download queue and worker pipeline."""
 
@@ -1395,6 +1394,145 @@ class DownloadPipelineTests(_ReClipTestBase):
     def test_batch_endpoint_rejects_malformed_items(self):
         self.assertEqual(self.client.post("/api/batch", json={"items": "nope"}).status_code, 400)
         self.assertEqual(self.client.post("/api/batch", json={"items": [{"url": ""}, 3]}).status_code, 400)
+
+
+def _write_fake_curl(directory, body, exit_code=0, stderr=""):
+    """A stand-in curl that logs its argv and writes ``body`` to --output."""
+    directory.mkdir(exist_ok=True)
+    log = directory / "curl-args.json"
+    script = directory / "curl"
+    script.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, sys\n"
+        f"open({str(log)!r}, 'w').write(json.dumps(sys.argv[1:]))\n"
+        "args = sys.argv[1:]\n"
+        "with open(args[args.index('--output') + 1], 'wb') as handle:\n"
+        f"    handle.write({body!r})\n"
+        f"sys.stderr.write({stderr!r})\n"
+        f"sys.exit({exit_code})\n"
+    )
+    script.chmod(0o755)
+    return log
+
+
+class GoFileAppTests(_ReClipTestBase):
+    FOLDER = "https://gofile.io/d/ROOT"
+    FILE = "https://gofile.io/d/AAA"
+
+    def target(self, size):
+        return {
+            "media_url": "https://file-eu-par-1.gofile.io/download/web/f1/clip.mp4",
+            "filename": "clip.mp4", "size": size, "md5": "",
+            "cookie": "accountToken=guest-token", "referer": "https://gofile.io/",
+        }
+
+    def test_gofile_folder_expands_into_one_card_per_file(self):
+        leaves = [self.FILE, "https://gofile.io/d/BBB"]
+        with patch.object(reclip.gofile, "expand", return_value=leaves) as expand:
+            expanded = reclip._expand_fetch_urls([self.FOLDER, "https://example.test/v"])
+        expand.assert_called_once_with(self.FOLDER)
+        self.assertEqual(expanded, leaves + ["https://example.test/v"])
+
+    def test_unlistable_gofile_folder_keeps_one_card_with_the_reason(self):
+        error = reclip.GoFileError("This GoFile link is private.")
+        with patch.object(reclip.gofile, "expand", side_effect=error), \
+             patch.object(reclip.gofile, "card_info", side_effect=error):
+            started = self.client.post("/api/fetch", json={"urls": [self.FOLDER]})
+            state = self.wait_for_fetch(started.get_json()["batch_id"])
+        self.assertEqual([item["url"] for item in state["urls"]], [self.FOLDER])
+        self.assertEqual(state["urls"][0]["status"], "error")
+        self.assertEqual(state["urls"][0]["error"], "This GoFile link is private.")
+
+    def test_gofile_card_comes_from_listing_without_ytdlp(self):
+        card = {"id": "f1", "title": "clip.mp4", "thumbnail": "https://store8.gofile.io/t",
+                "size": 3817835, "mimetype": "video/mp4"}
+        with patch.object(reclip.gofile, "card_info", return_value=card), \
+             patch.object(reclip, "run_ytdlp_json") as ytdlp:
+            info = reclip._extract_video_info(self.FILE)
+        ytdlp.assert_not_called()
+        self.assertEqual(info["title"], "clip.mp4")
+        self.assertEqual(info["extractor"], "GoFile")
+        self.assertEqual(info["id"], "f1")
+        self.assertEqual(info["formats"][0]["id"], "direct")
+        self.assertIn("Original file", info["formats"][0]["label"])
+
+    def test_blocked_gofile_file_fails_fetch_with_gofile_reason(self):
+        from gofile_helper import MSG_OVERLOADED
+        with patch.object(reclip.gofile, "card_info",
+                          side_effect=reclip.GoFileError(MSG_OVERLOADED)):
+            started = self.client.post("/api/fetch", json={"urls": [self.FILE]})
+            state = self.wait_for_fetch(started.get_json()["batch_id"])
+        self.assertEqual(state["urls"][0]["status"], "error")
+        self.assertEqual(state["urls"][0]["error"], MSG_OVERLOADED)
+
+    def test_blocked_gofile_file_fails_download_without_transfer(self):
+        from gofile_helper import MSG_OVERLOADED
+        job_id = reclip.new_job(self.FILE, "clip.mp4", "video", "direct")
+        with patch.object(reclip.gofile, "resolve_download",
+                          side_effect=reclip.GoFileError(MSG_OVERLOADED)), \
+             patch.object(reclip, "_attempt_plain_download") as transfer, \
+             patch.object(reclip, "build_ytdlp_command") as ytdlp:
+            reclip.run_download(job_id, self.FILE, "video", "direct")
+        transfer.assert_not_called()
+        ytdlp.assert_not_called()
+        self.assertEqual(reclip.jobs[job_id]["status"], "error")
+        self.assertEqual(reclip.jobs[job_id]["error"], MSG_OVERLOADED)
+
+    def test_gofile_download_sends_cookie_in_one_stream_and_registers_file(self):
+        body = b"\x00\x00\x00\x18ftypmp42" + b"v" * 500
+        fake_bin = _DOWNLOAD_DIR / "gofile-bin"
+        log = _write_fake_curl(fake_bin, body)
+        path = str(fake_bin) + os.pathsep + os.environ.get("PATH", "")
+        job_id = reclip.new_job(self.FILE, "clip.mp4", "video", "direct")
+        with patch.dict(os.environ, {"PATH": path}), \
+             patch.object(reclip.gofile, "resolve_download", return_value=self.target(len(body))), \
+             patch.object(reclip, "_media_transfer_info") as probe, \
+             patch.object(reclip, "_segmented_curl_download") as segmented, \
+             patch.object(reclip, "_probe_duration", return_value=None), \
+             patch.object(reclip, "_make_thumb", return_value=None):
+            reclip.run_download(job_id, self.FILE, "video", "direct")
+
+        job = reclip.jobs[job_id]
+        self.assertEqual(job["status"], "done", job.get("error"))
+        self.assertEqual(job["filename"], "clip.mp4")
+        self.assertEqual(Path(job["file"]).read_bytes(), body)
+        probe.assert_not_called()
+        segmented.assert_not_called()
+        import json as _json
+        args = _json.loads(log.read_text())
+        self.assertIn("-b", args)
+        self.assertEqual(args[args.index("-b") + 1], "accountToken=guest-token")
+        self.assertEqual(args[-1], self.target(0)["media_url"])
+
+    def test_gofile_error_page_instead_of_file_is_rejected(self):
+        fake_bin = _DOWNLOAD_DIR / "gofile-html-bin"
+        _write_fake_curl(fake_bin, b"<!DOCTYPE html><html>Please log in</html>")
+        path = str(fake_bin) + os.pathsep + os.environ.get("PATH", "")
+        job_id = reclip.new_job(self.FILE, "clip.mp4", "video", "direct")
+        with patch.dict(os.environ, {"PATH": path}), \
+             patch.object(reclip.gofile, "resolve_download", return_value=self.target(5000)), \
+             patch.object(reclip.gofile, "invalidate") as invalidate:
+            reclip.run_download(job_id, self.FILE, "video", "direct")
+
+        job = reclip.jobs[job_id]
+        self.assertEqual(job["status"], "error")
+        self.assertIn("web page instead of the file", job["error"])
+        invalidate.assert_called_once_with(self.FILE)
+        self.assertEqual(list(_DOWNLOAD_DIR.glob(f"{job_id}.*")), [])
+
+    def test_gofile_http_refusal_is_explained(self):
+        fake_bin = _DOWNLOAD_DIR / "gofile-403-bin"
+        _write_fake_curl(fake_bin, b"", exit_code=22,
+                         stderr="curl: (22) The requested URL returned error: 403")
+        path = str(fake_bin) + os.pathsep + os.environ.get("PATH", "")
+        job_id = reclip.new_job(self.FILE, "clip.mp4", "video", "direct")
+        with patch.dict(os.environ, {"PATH": path}), \
+             patch.object(reclip.gofile, "resolve_download", return_value=self.target(5000)):
+            reclip.run_download(job_id, self.FILE, "video", "direct")
+
+        job = reclip.jobs[job_id]
+        self.assertEqual(job["status"], "error")
+        self.assertTrue(job["error"].startswith("GoFile refused the download (HTTP 403)"))
 
 
 if __name__ == "__main__":

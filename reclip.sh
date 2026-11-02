@@ -59,6 +59,10 @@ if [ ! -d "venv" ]; then
     pip install -q -r requirements.txt
 else
     source venv/bin/activate
+    # Venvs created before GoFile support lack its sandboxed JS engine.
+    python3 -c "import py_mini_racer" 2>/dev/null || \
+        pip install -q mini-racer || \
+        echo "  (couldn't install mini-racer — GoFile links will be unavailable)"
 fi
 
 # Keep yt-dlp fresh — sites (Instagram, Facebook, etc.) break its extractors
