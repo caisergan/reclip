@@ -81,6 +81,24 @@ the fetched-items header. These controls are separate from download concurrency:
 Lower the worker counts if a media host rate-limits parallel metadata requests or
 the server has limited memory.
 
+## Download queue
+
+Queued downloads start in the order they were added, and only the selected number
+run at once. **Stop** cancels a queued or running download. **Retry** re-queues
+it with the quality and group it was first requested with. **Clear** stops
+whatever is still running and removes the list from the server, so a reload
+doesn't bring old cards back. Finished files stay in the Downloads library.
+
+A transfer is aborted only when it stalls. Long downloads that keep making
+progress are never cut off by a fixed time limit:
+
+| Variable | Default | Purpose |
+|---|---:|---|
+| `RECLIP_MAX_CONCURRENT` | `3` | Initial simultaneous downloads (changeable in the UI) |
+| `RECLIP_MAX_POOL` | `8` | Ceiling for simultaneous downloads (1–64) |
+| `RECLIP_STALL_TIMEOUT` | `300` | Abort a download after this many seconds without progress |
+| `RECLIP_DOWNLOAD_TIMEOUT` | `0` | Optional hard cap on one download's total seconds (`0` = none) |
+
 ## MEGA Helper
 
 1. Open **Downloads** and click the red **M** button.

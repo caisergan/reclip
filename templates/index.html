@@ -1258,6 +1258,7 @@ dropArea.addEventListener('drop', e=>{
 let cards=[];
 const fetchBatchProgress=new Map();
 const ACTIVE_DOWNLOAD_STATES=['queued','downloading','processing','resolving'];
+const SETTLED_DOWNLOAD_STATES=['done','error','cancelled'];
 function friendlyError(error){
   const value=String(error||'Unknown error');
   if(value.includes('Unsupported URL')) return 'This URL is not supported';
@@ -1274,7 +1275,16 @@ function cardDuration(seconds){
 }
 function cardHost(url){try{return new URL(url).hostname.replace(/^www\./,'');}catch{return '';}}
 function readyIndexes(){return cards.map((card,index)=>card?.status==='ready'?index:-1).filter(index=>index>=0);}
-function missingReadyIndexes(indexes=readyIndexes()){return indexes.filter(index=>!cards[index]?.alreadyOnServer);}
+// URLs already queued, downloading, finished or in the library. "On server"
+// is only computed at fetch time, so without this a second fetch of the same
+// link (or a reload) offered to download it again.
+function claimedDownloadUrls(){
+  const urls=new Set();
+  cards.forEach(card=>{if(card?.jobId&&(ACTIVE_DOWNLOAD_STATES.includes(card.status)||card.status==='done'))urls.add(card.url);});
+  libData.forEach(file=>{if(!file.isDemo&&file.url&&file.local_available!==false)urls.add(file.url);});
+  return urls;
+}
+function missingReadyIndexes(indexes=readyIndexes()){const claimed=claimedDownloadUrls();return indexes.filter(index=>!cards[index]?.alreadyOnServer&&!claimed.has(cards[index]?.url));}
 function rememberFetchProgress(state){
   if(!state?.batch_id)return;
   const items=Array.isArray(state.urls)?state.urls:[];
@@ -1319,14 +1329,107 @@ function renderFetchProgress(aliveCards){
   document.getElementById('fetchProgressFill').style.width=percent+'%';
   document.getElementById('fetchProgressCount').textContent=percent+'%';
 }
+// Card elements are kept per index and patched in place. Rebuilding every
+// card on each progress tick replaced buttons under the cursor, so a click
+// whose mousedown and mouseup straddled a re-render (Stop, Delete…) was lost.
+const cardEls=new Map();
+let renderQueued=false;
+function scheduleRender(){
+  if(renderQueued)return;
+  renderQueued=true;
+  requestAnimationFrame(()=>{renderQueued=false;renderCards();});
+}
+function cardProgressView(card){
+  const pct=Math.max(0,Math.min(100,Math.round(Number(card.progress)||0)));
+  const processing=['processing','resolving'].includes(card.status);
+  const queued=card.status==='queued';
+  return {
+    cls:queued?'fill queued':processing?'fill processing':'fill',
+    width:processing?100:queued?6:pct,
+    left:queued?'Queued':card.status==='resolving'?'Resolving':card.status==='processing'?'Processing':`${pct}%${card.size?' · '+card.size:''}`,
+    right:[card.speed,card.eta?`ETA ${card.eta}`:''].filter(Boolean).join(' · '),
+  };
+}
+function cardView(card,index){
+  if(card.status==='loading'){
+    return {cls:'card',html:`<div class="thumb-wrap" style="background:linear-gradient(90deg,#F4F4F5 25%,#ECECEE 50%,#F4F4F5 75%);background-size:200% 100%;animation:sh 1.2s infinite"></div><div class="card-body"><div style="height:12px;width:70%;border-radius:6px;background:#F4F4F5"></div><div style="height:10px;width:40%;border-radius:6px;background:#F4F4F5;margin-top:6px"></div></div>`};
+  }
+  if(card.status==='info-error'||card.status==='info-cancelled'){
+    const stopped=card.status==='info-cancelled';
+    const icon=stopped?'<rect x="7" y="7" width="10" height="10" rx="1"/>':'<circle cx="12" cy="12" r="10"/><path d="M12 8v5M12 16h.01"/>';
+    return {cls:'card '+(stopped?'stopped':'error'),html:`<div class="thumb-wrap"><div class="ph"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">${icon}</svg></div></div><div class="card-body"><div class="card-title" style="color:${stopped?'var(--fg)':'#DC2626'}">${stopped?'Fetch stopped':'Could not fetch'}</div><div class="${stopped?'card-meta':'error-text'}">${esc(stopped?'This link was not fetched.':friendlyError(card.error))}</div><div class="card-meta">${esc(card.url)}</div><div class="card-foot"><button class="btn-sm btn-ghost" onclick="retry(${index})">Retry</button><button class="btn-sm btn-ghost" onclick="removeCard(${index})">Remove</button></div></div>`};
+  }
+  const selectable=card.status==='ready';
+  const active=ACTIVE_DOWNLOAD_STATES.includes(card.status);
+  const cls='card'+(selectable?' selectable':'')+(card.selected?' selected':'')+(active?' downloading':'');
+  const isAudio=currentFormat==='audio';
+  const thumbnail=card.thumbnail||card.thumb||'';
+  const duration=cardDuration(card.duration);
+  const thumb=isAudio
+    ?`<div class="ph" style="background:var(--accent);color:#fff"><svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6Z"/></svg></div>`
+    :thumbnail?`<img src="${escAttr(thumbnail)}" alt="" loading="lazy">${duration?`<span class="dur-badge">${esc(duration)}</span>`:''}`
+    :`<div class="ph"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="1.5"/><path d="m21 15-5-5L5 20"/></svg></div>`;
+  let footer='';
+  if(card.status==='ready'){
+    const formats=(!isAudio&&card.formats?.length>1)?card.formats.slice(0,6):[];
+    const qualities=formats.length?`<span class="q-group">${formats.map(format=>`<button class="q${String(format.id)===String(card.selectedFormatId)?' active':''}" onclick="pickCardFormat(${index},'${encodeURIComponent(format.id)}')">${esc(format.label)}</button>`).join('')}</span>`:'';
+    const existing=card.alreadyOnServer?'<span style="font-size:11px;color:#16A34A;font-weight:600">✓ On server</span>':'';
+    footer=`${existing}<button class="btn-sm btn-primary" onclick="downloadOne(${index})">${card.alreadyOnServer?'Reuse':'Download'}</button>${qualities}<button class="btn-sm btn-ghost" onclick="copyLink(${index})">Copy link</button><button class="btn-sm btn-ghost" onclick="removeCard(${index})">Remove</button>`;
+  }else if(active){
+    // Static shell only: the numbers are patched in by applyCardProgress so
+    // the Stop button survives every progress tick.
+    footer=`<div class="progress" style="flex-basis:100%"><div class="track-bg"><div class="fill"></div></div><div class="progress-meta"><span><b></b></span><span></span></div></div><button class="btn-sm btn-ghost" onclick="stopOne(${index})">Stop</button>`;
+  }else if(card.status==='done'){
+    const href=card.jobId?`/api/file/${encodeURIComponent(card.jobId)}`:card.filename?`/api/library/download?f=${encodeURIComponent(card.filename)}`:'';
+    footer=`${href?`<a class="btn-sm btn-primary" href="${href}" download>Save</a>`:''}<span style="font-size:12px;color:#16A34A;font-weight:600">✓ ${card.deduped?'Already saved':'Saved'}</span><button class="btn-sm btn-ghost" onclick="copyLink(${index})">Copy link</button><button class="btn-sm btn-ghost" onclick="removeCard(${index})">Delete</button>`;
+  }else if(card.status==='cancelled'){
+    footer=`<button class="btn-sm btn-primary" onclick="retry(${index})">Retry</button><span style="font-size:12px;color:var(--muted);font-weight:600">Stopped</span><button class="btn-sm btn-ghost" onclick="removeCard(${index})">Delete</button>`;
+  }else if(card.status==='error'){
+    footer=`<button class="btn-sm btn-primary" onclick="retry(${index})">Retry</button><button class="btn-sm btn-ghost" onclick="removeCard(${index})">Delete</button><div class="error-text" style="flex-basis:100%">${esc(friendlyError(card.error||'Download failed'))}</div>`;
+  }
+  const meta=[card.uploader||cardHost(card.url),duration].filter(Boolean).join(' · ');
+  const selectedBadge=selectable&&card.selected?`<span class="card-selected-badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg>Selected</span>`:'';
+  return {
+    cls,selectable,
+    label:`${card.selected?'Deselect':'Select'} ${card.title||'fetched item'}`,
+    html:`<div class="thumb-wrap">${thumb}</div><div class="card-body"><div class="card-title-row"><div class="card-title" title="${escAttr(card.title||'Untitled')}">${esc(card.title||'Untitled')}</div>${selectedBadge}</div><div class="card-meta">${esc(meta)}</div><div class="card-foot">${footer}</div></div>`,
+    progress:active?cardProgressView(card):null,
+  };
+}
+function applyCardProgress(el,progress){
+  const fill=el.querySelector('.progress .fill');
+  if(fill){
+    if(fill.className!==progress.cls)fill.className=progress.cls;
+    const width=progress.width+'%';
+    if(fill.style.width!==width)fill.style.width=width;
+  }
+  const left=el.querySelector('.progress-meta b');
+  if(left&&left.textContent!==progress.left)left.textContent=progress.left;
+  const right=el.querySelector('.progress-meta > span:last-child');
+  if(right&&right.textContent!==progress.right)right.textContent=progress.right;
+}
+function syncCardElement(el,view){
+  if(el.className!==view.cls)el.className=view.cls;
+  if(el._html!==view.html){el.innerHTML=view.html;el._html=view.html;}
+  if(view.selectable){
+    el.tabIndex=0;
+    el.setAttribute('role','button');
+    el.setAttribute('aria-pressed',String(el.classList.contains('selected')));
+    el.setAttribute('aria-label',view.label);
+    el.title=el.classList.contains('selected')?'Click card to deselect':'Click card to select';
+  }else if(el.hasAttribute('role')){
+    el.removeAttribute('tabindex');el.removeAttribute('role');el.removeAttribute('aria-pressed');el.removeAttribute('aria-label');el.removeAttribute('title');
+  }
+  if(view.progress)applyCardProgress(el,view.progress);
+}
 function renderCards(){
   const wrap=document.getElementById('cards');
   const head=document.getElementById('cardsHead');
   const empty=document.getElementById('emptyCards');
   const alive=cards.filter(card=>card&&card.status!=='deleted');
-  wrap.querySelectorAll('.card').forEach(card=>card.remove());
   renderFetchProgress(alive);
   if(!alive.length){
+    cardEls.forEach(el=>el.remove());cardEls.clear();
     head.style.display='none';
     if(empty) empty.style.display='flex';
     return;
@@ -1356,68 +1459,31 @@ function renderCards(){
   downloadMissing.textContent=`Download missing (${missing.length})`;
   downloadMissing.title=`Download ${missing.length} fetched item${missing.length===1?'':'s'} not on the server`;
 
+  const seen=new Set();
+  let previous=empty&&empty.parentElement===wrap?empty:null;
   cards.forEach((card,index)=>{
     if(!card||card.status==='deleted') return;
-    const element=document.createElement('div');
-    element.id=`card-${index}`;
-    if(card.status==='loading'){
-      element.className='card';
-      element.innerHTML=`<div class="thumb-wrap" style="background:linear-gradient(90deg,#F4F4F5 25%,#ECECEE 50%,#F4F4F5 75%);background-size:200% 100%;animation:sh 1.2s infinite"></div><div class="card-body"><div style="height:12px;width:70%;border-radius:6px;background:#F4F4F5"></div><div style="height:10px;width:40%;border-radius:6px;background:#F4F4F5;margin-top:6px"></div></div>`;
-      wrap.appendChild(element); return;
+    seen.add(index);
+    let el=cardEls.get(index);
+    if(!el){
+      el=document.createElement('div');
+      el.id=`card-${index}`;
+      el.dataset.index=String(index);
+      cardEls.set(index,el);
     }
-    if(card.status==='info-error'||card.status==='info-cancelled'){
-      const stopped=card.status==='info-cancelled';
-      element.className='card '+(stopped?'stopped':'error');
-      const icon=stopped?'<rect x="7" y="7" width="10" height="10" rx="1"/>':'<circle cx="12" cy="12" r="10"/><path d="M12 8v5M12 16h.01"/>';
-      element.innerHTML=`<div class="thumb-wrap"><div class="ph"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">${icon}</svg></div></div><div class="card-body"><div class="card-title" style="color:${stopped?'var(--fg)':'#DC2626'}">${stopped?'Fetch stopped':'Could not fetch'}</div><div class="${stopped?'card-meta':'error-text'}">${esc(stopped?'This link was not fetched.':friendlyError(card.error))}</div><div class="card-meta">${esc(card.url)}</div><div class="card-foot"><button class="btn-sm btn-ghost" onclick="retry(${index})">Retry</button><button class="btn-sm btn-ghost" onclick="removeCard(${index})">Remove</button></div></div>`;
-      wrap.appendChild(element); return;
-    }
-
-    const selectable=card.status==='ready';
-    element.className='card'+(selectable?' selectable':'')+(card.selected?' selected':'')+(ACTIVE_DOWNLOAD_STATES.includes(card.status)?' downloading':'');
-    if(selectable){
-      element.tabIndex=0;
-      element.setAttribute('role','button');
-      element.setAttribute('aria-pressed',String(!!card.selected));
-      element.setAttribute('aria-label',`${card.selected?'Deselect':'Select'} ${card.title||'fetched item'}`);
-      element.title=card.selected?'Click card to deselect':'Click card to select';
-      element.addEventListener('click',event=>toggleCardSelection(index,event));
-      element.addEventListener('keydown',event=>toggleCardSelection(index,event));
-    }
-    const isAudio=currentFormat==='audio';
-    const thumbnail=card.thumbnail||card.thumb||'';
-    const duration=cardDuration(card.duration);
-    const thumb=isAudio
-      ?`<div class="ph" style="background:var(--accent);color:#fff"><svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6Z"/></svg></div>`
-      :thumbnail?`<img src="${escAttr(thumbnail)}" alt="" loading="lazy">${duration?`<span class="dur-badge">${esc(duration)}</span>`:''}`
-      :`<div class="ph"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="1.5"/><path d="m21 15-5-5L5 20"/></svg></div>`;
-    let footer='';
-    if(card.status==='ready'){
-      const formats=(!isAudio&&card.formats?.length>1)?card.formats.slice(0,6):[];
-      const qualities=formats.length?`<span class="q-group">${formats.map(format=>`<button class="q${String(format.id)===String(card.selectedFormatId)?' active':''}" onclick="pickCardFormat(${index},'${encodeURIComponent(format.id)}')">${esc(format.label)}</button>`).join('')}</span>`:'';
-      const existing=card.alreadyOnServer?'<span style="font-size:11px;color:#16A34A;font-weight:600">✓ On server</span>':'';
-      footer=`${existing}<button class="btn-sm btn-primary" onclick="downloadOne(${index})">${card.alreadyOnServer?'Reuse':'Download'}</button>${qualities}<button class="btn-sm btn-ghost" onclick="copyLink(${index})">Copy link</button><button class="btn-sm btn-ghost" onclick="removeCard(${index})">Remove</button>`;
-    }else if(ACTIVE_DOWNLOAD_STATES.includes(card.status)){
-      const pct=Math.max(0,Math.min(100,Math.round(Number(card.progress)||0)));
-      const processing=['processing','resolving'].includes(card.status);
-      const cls=card.status==='queued'?'fill queued':processing?'fill processing':'fill';
-      const left=card.status==='queued'?'Queued':card.status==='resolving'?'Resolving':card.status==='processing'?'Processing':`${pct}%${card.size?' · '+card.size:''}`;
-      const right=[card.speed,card.eta?`ETA ${card.eta}`:''].filter(Boolean).join(' · ');
-      footer=`<div class="progress" style="flex-basis:100%"><div class="track-bg"><div class="${cls}" style="width:${processing?100:card.status==='queued'?6:pct}%"></div></div><div class="progress-meta"><span><b>${esc(left)}</b></span><span>${esc(right)}</span></div></div><button class="btn-sm btn-ghost" onclick="stopOne(${index})">Stop</button>`;
-    }else if(card.status==='done'){
-      const href=card.jobId?`/api/file/${encodeURIComponent(card.jobId)}`:card.filename?`/api/library/download?f=${encodeURIComponent(card.filename)}`:'';
-      footer=`${href?`<a class="btn-sm btn-primary" href="${href}" download>Save</a>`:''}<span style="font-size:12px;color:#16A34A;font-weight:600">✓ ${card.deduped?'Already saved':'Saved'}</span><button class="btn-sm btn-ghost" onclick="copyLink(${index})">Copy link</button><button class="btn-sm btn-ghost" onclick="removeCard(${index})">Delete</button>`;
-    }else if(card.status==='cancelled'){
-      footer=`<button class="btn-sm btn-primary" onclick="retry(${index})">Retry</button><span style="font-size:12px;color:var(--muted);font-weight:600">Stopped</span><button class="btn-sm btn-ghost" onclick="removeCard(${index})">Delete</button>`;
-    }else if(card.status==='error'){
-      footer=`<button class="btn-sm btn-primary" onclick="retry(${index})">Retry</button><button class="btn-sm btn-ghost" onclick="removeCard(${index})">Delete</button><div class="error-text" style="flex-basis:100%">${esc(friendlyError(card.error||'Download failed'))}</div>`;
-    }
-    const meta=[card.uploader||cardHost(card.url),duration].filter(Boolean).join(' · ');
-    const selectedBadge=selectable&&card.selected?`<span class="card-selected-badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg>Selected</span>`:'';
-    element.innerHTML=`<div class="thumb-wrap">${thumb}</div><div class="card-body"><div class="card-title-row"><div class="card-title" title="${escAttr(card.title||'Untitled')}">${esc(card.title||'Untitled')}</div>${selectedBadge}</div><div class="card-meta">${esc(meta)}</div><div class="card-foot">${footer}</div></div>`;
-    wrap.appendChild(element);
+    syncCardElement(el,cardView(card,index));
+    if(previous){if(previous.nextElementSibling!==el)previous.after(el);}
+    else if(wrap.firstElementChild!==el)wrap.prepend(el);
+    previous=el;
   });
+  for(const [index,el] of cardEls){if(!seen.has(index)){el.remove();cardEls.delete(index);}}
 }
+function cardIndexFromEvent(event){
+  const el=event.target instanceof Element?event.target.closest('.card.selectable'):null;
+  return el&&el.dataset.index!=null?Number(el.dataset.index):-1;
+}
+document.getElementById('cards').addEventListener('click',event=>{const index=cardIndexFromEvent(event);if(index>=0)toggleCardSelection(index,event);});
+document.getElementById('cards').addEventListener('keydown',event=>{const index=cardIndexFromEvent(event);if(index>=0)toggleCardSelection(index,event);});
 function toggleCardSelection(index,event){
   const card=cards[index];if(card?.status!=='ready')return;
   const target=event?.target;
@@ -1445,14 +1511,18 @@ function copyLink(index){const url=cards[index]?.url||'';if(!url)return;navigato
 const fetchIntervals={};
 const fetchBases={};
 const settledFetches=new Set();
-const batchPollTimers=new Map();
 let libraryRefreshTimer=null;
 async function apiJson(path,options={}){
   const response=await fetch(path,options);
   let data={}; try{data=await response.json();}catch{}
-  if(!response.ok) throw new Error(data.error||`Request failed (${response.status})`);
+  if(!response.ok){
+    const error=new Error(data.error||`Request failed (${response.status})`);
+    error.status=response.status;error.data=data;
+    throw error;
+  }
   return data;
 }
+function postJson(path,body){return apiJson(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});}
 async function startFetch(overrideUrls=null){
   const urls=overrideUrls||[...new Set(tokens(ta.value))];
   if(!urls.length){ta.focus();toast('Paste a link first');return;}
@@ -1500,7 +1570,7 @@ async function stopFetching(){
   }catch(error){toast(error.message||'Could not stop fetching');}
   finally{pause.disabled=false;button.disabled=false;renderCards();}
 }
-async function attachFetchBatch(batchId){
+async function attachFetchBatch(batchId,{restored=false}={}){
   if(!batchId||batchId in fetchIntervals||batchId in fetchBases||settledFetches.has(batchId)) return;
   fetchIntervals[batchId]=null;
   let snapshot;
@@ -1509,7 +1579,9 @@ async function attachFetchBatch(batchId){
   fetchBases[batchId]=cards.length;
   (snapshot.urls||[]).forEach(item=>cards.push({url:item.url||'',status:'loading',selected:false,batchId}));
   buildFetchCards(snapshot);
-  if(snapshot.finished){clearFetchPoll(batchId);afterFetchBatch(batchId);return;}
+  // A batch that had already finished before this page attached (a reload)
+  // already started its auto-downloads; doing it again duplicated them.
+  if(snapshot.finished){clearFetchPoll(batchId);if(!restored)afterFetchBatch(batchId);return;}
   fetchIntervals[batchId]=setInterval(async()=>{
     try{
       const state=await apiJson('/api/fetch/'+encodeURIComponent(batchId));
@@ -1543,105 +1615,250 @@ function afterFetchBatch(batchId){
   const missing=missingReadyIndexes(batchReady);
   if(autoOn&&missing.length) downloadIndexes(missing);
 }
+
+// ---- Download jobs -------------------------------------------------------
+// One poller asks for every in-flight job in a single request. Polls never
+// overlap, so a slow response can no longer land after a newer one and drag
+// a finished card back to "downloading". Each response also carries the
+// job's attempt number: answers about an earlier try are ignored.
+const JOB_POLL_MS=800;
+const JOB_POLL_MAX_FAILURES=8;
+let jobPollTimer=null,jobPollRunning=false,jobPollFailures=0;
 function selectedGroupId(){return document.getElementById('groupSel')?.value||'';}
-function downloadPayload(card){
-  return {url:card.url,format:currentFormat,format_id:card.selectedFormatId,title:card.title||'',thumbnail:card.thumbnail||'',group_id:selectedGroupId(),id:card.videoId,extractor:card.extractor};
+function downloadPayload(card,reuseRequest=false){
+  const requested=reuseRequest&&card.requested;
+  return {url:card.url,format:requested?requested.format:currentFormat,format_id:requested?requested.format_id:card.selectedFormatId,title:card.title||'',thumbnail:card.thumbnail||'',group_id:requested?requested.group_id:selectedGroupId(),id:card.videoId,extractor:card.extractor};
 }
-async function downloadOne(index){
-  const card=cards[index];if(!card||card.status!=='ready'&&card.status!=='error'&&card.status!=='cancelled')return;
-  card.status='queued';card.error='';card.progress=0;card.speed='';card.eta='';card.cancelRequested=false;renderCards();
+function rememberRequest(card,payload){card.requested={format:payload.format,format_id:payload.format_id,group_id:payload.group_id};}
+function markQueued(card){
+  Object.assign(card,{status:'queued',error:'',progress:0,speed:'',eta:'',size:'',downloaded:'',selected:false,cancelRequested:false,serverSettled:false});
+}
+function needsJobPoll(card){return !!(card&&card.status!=='deleted'&&card.jobId&&!card.serverSettled);}
+function ensureJobPolling(){
+  if(jobPollTimer||jobPollRunning||!cards.some(needsJobPoll))return;
+  jobPollTimer=setTimeout(pollJobs,JOB_POLL_MS);
+}
+async function pollJobs(){
+  jobPollTimer=null;
+  const ids=[...new Set(cards.filter(needsJobPoll).map(card=>card.jobId))];
+  if(!ids.length){updateOverall();return;}
+  jobPollRunning=true;
   try{
-    const data=await apiJson('/api/download',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(downloadPayload(card))});
-    card.jobId=data.job_id;
-    if(data.status==='done'){applyJobUpdate(index,data);return;}
-    if(card.cancelRequested){await fetch('/api/cancel/'+encodeURIComponent(card.jobId),{method:'POST'});return;}
-    pollCard(index);
-  }catch(error){card.status='error';card.error=error.message;renderCards();}
+    const data=await postJson('/api/jobs/status',{job_ids:ids});
+    jobPollFailures=0;
+    const states=data.jobs||{};
+    cards.forEach((card,index)=>{
+      if(!needsJobPoll(card)||!(card.jobId in states))return;
+      const job=states[card.jobId];
+      if(job)applyJobUpdate(index,job);else jobVanished(index);
+    });
+  }catch{
+    jobPollFailures++;
+    if(jobPollFailures>=JOB_POLL_MAX_FAILURES){
+      cards.forEach(card=>{
+        if(!needsJobPoll(card))return;
+        card.serverSettled=true;
+        if(card.cancelRequested)return;
+        Object.assign(card,{status:'error',error:'Lost connection to the server — press Retry to reconnect',speed:'',eta:''});
+      });
+      jobPollFailures=0;
+    }
+  }finally{
+    jobPollRunning=false;
+    updateOverall();scheduleRender();
+    if(cards.some(needsJobPoll))jobPollTimer=setTimeout(pollJobs,jobPollFailures?Math.min(5000,JOB_POLL_MS*2**jobPollFailures):JOB_POLL_MS);
+  }
+}
+function jobVanished(index){
+  // The server no longer knows this job (it restarted, or the record was
+  // evicted). Retry starts a fresh download with the original settings.
+  const card=cards[index];if(!card)return;
+  card.serverSettled=true;
+  if(card.cancelRequested||card.status==='cancelled'){card.status='cancelled';}
+  else if(ACTIVE_DOWNLOAD_STATES.includes(card.status)){Object.assign(card,{status:'error',error:'This download is no longer on the server',speed:'',eta:''});}
+  scheduleRender();
 }
 function applyJobUpdate(index,data){
-  const card=cards[index];if(!card||card.status==='deleted')return true;
-  const locked=card.status==='cancelled'||card.cancelRequested;
-  if(!locked){
-    if(typeof data.progress==='number')card.progress=data.progress;
-    card.speed=data.speed||'';card.eta=data.eta||'';card.size=data.size||'';card.downloaded=data.downloaded||'';
+  const card=cards[index];if(!card||card.status==='deleted'||!data)return;
+  if(data.job_id&&card.jobId&&data.job_id!==card.jobId)return;
+  const attempt=Number(data.attempt)||1;
+  if(attempt<(card.attempt||1))return; // describes an earlier try
+  if(card.awaitingRetry&&attempt<=(card.attempt||1))return; // poll raced the retry request
+  if(attempt>(card.attempt||1)){card.attempt=attempt;card.serverSettled=false;}
+  const settled=SETTLED_DOWNLOAD_STATES.includes(data.status);
+  if(card.serverSettled&&!settled)return; // stale: this attempt already ended
+  if(card.cancelRequested){
+    // The user pressed Stop. Keep showing "Stopped" until the server agrees,
+    // unless the download actually finished before the stop arrived.
+    if(data.status==='done'){card.cancelRequested=false;}
+    else{if(settled){card.status='cancelled';card.serverSettled=true;}scheduleRender();return;}
   }
+  if(typeof data.progress==='number')card.progress=data.progress;
+  card.speed=data.speed||'';card.eta=data.eta||'';card.size=data.size||'';card.downloaded=data.downloaded||'';
   if(data.status==='done'){
-    card.status='done';card.progress=100;card.filename=data.filename||card.filename;card.deduped=!!data.deduped;card.selected=false;
-    scheduleLibraryRefresh();renderCards();return true;
+    Object.assign(card,{status:'done',progress:100,speed:'',eta:'',filename:data.filename||card.filename,deduped:!!data.deduped,selected:false,serverSettled:true});
+    scheduleLibraryRefresh();
+  }else if(data.status==='error'){
+    Object.assign(card,{status:'error',error:data.error||'Download failed',speed:'',eta:'',serverSettled:true});
+  }else if(data.status==='cancelled'){
+    Object.assign(card,{status:'cancelled',speed:'',eta:'',serverSettled:true});
+  }else if(data.status){
+    card.status=data.status;
   }
-  if(data.status==='error'){card.status='error';card.error=data.error||'Download failed';renderCards();return true;}
-  if(data.status==='cancelled'){card.status='cancelled';card.speed='';card.eta='';renderCards();return true;}
-  if(locked)return false;
-  card.status=data.status||card.status;renderCards();return false;
+  scheduleRender();
 }
-function pollCard(index){
-  const card=cards[index];if(!card?.jobId||card.pollTimer)return;
-  card.pollTimer=setInterval(async()=>{
-    try{
-      const data=await apiJson('/api/status/'+encodeURIComponent(card.jobId));
-      if(applyJobUpdate(index,data)){clearInterval(card.pollTimer);card.pollTimer=null;}
-    }catch(error){clearInterval(card.pollTimer);card.pollTimer=null;card.status='error';card.error=error.message||'Lost connection to server';renderCards();}
-  },800);
-}
-async function stopOne(index){
+function discardJob(jobId){if(jobId)postJson('/api/jobs/dismiss',{job_ids:[jobId]}).catch(()=>{});}
+async function startNewDownload(index,reuseRequest=false){
   const card=cards[index];if(!card)return;
-  if(card.pollTimer){clearInterval(card.pollTimer);card.pollTimer=null;}
-  card.cancelRequested=true;card.status='cancelled';card.speed='';card.eta='';renderCards();
-  if(card.jobId){try{await apiJson('/api/cancel/'+encodeURIComponent(card.jobId),{method:'POST'});}catch{}}
+  const payload=downloadPayload(card,reuseRequest);
+  markQueued(card);rememberRequest(card,payload);
+  Object.assign(card,{jobId:null,attempt:1,downloadBatch:null});
+  renderCards();
+  try{
+    const data=await postJson('/api/download',payload);
+    if(cards[index]!==card){discardJob(data.job_id);return;} // removed meanwhile
+    card.jobId=data.job_id;card.attempt=Number(data.attempt)||1;
+    if(data.status==='done'){applyJobUpdate(index,{...data,job_id:data.job_id});return;}
+    if(card.cancelRequested)requestCancel(index);
+    ensureJobPolling();
+  }catch(error){
+    if(cards[index]!==card)return;
+    Object.assign(card,{status:'error',error:error.message,serverSettled:true});renderCards();
+  }
+}
+function downloadOne(index){
+  const card=cards[index];if(!card||!['ready','error','cancelled'].includes(card.status))return;
+  startNewDownload(index,card.status!=='ready');
+}
+async function requestCancel(index){
+  const card=cards[index];const jobId=card?.jobId;if(!jobId)return;
+  try{
+    const data=await apiJson('/api/cancel/'+encodeURIComponent(jobId),{method:'POST'});
+    if(cards[index]===card&&card.jobId===jobId)applyJobUpdate(index,data);
+  }catch(error){
+    if(error.status===404&&cards[index]===card&&card.jobId===jobId){card.serverSettled=true;scheduleRender();}
+  }
+  ensureJobPolling();
+}
+function stopOne(index){
+  const card=cards[index];if(!card)return;
+  Object.assign(card,{cancelRequested:true,status:'cancelled',speed:'',eta:''});
+  renderCards();updateOverall();
+  requestCancel(index);
 }
 async function removeCard(index){
   const card=cards[index];if(!card)return;
-  if(card.pollTimer){clearInterval(card.pollTimer);card.pollTimer=null;}
-  cards[index]={status:'deleted',url:card.url,batchId:card.batchId};renderCards();
-  if(card.jobId){try{await apiJson('/api/delete/'+encodeURIComponent(card.jobId),{method:'POST'});scheduleLibraryRefresh();}catch(error){toast(error.message);}}
+  cards[index]={status:'deleted',url:card.url,batchId:card.batchId};renderCards();updateOverall();
+  if(!card.jobId)return;
+  try{await apiJson('/api/delete/'+encodeURIComponent(card.jobId),{method:'POST'});scheduleLibraryRefresh();}
+  catch(error){
+    toast(error.message);
+    if(cards[index]?.status==='deleted'){cards[index]=card;renderCards();updateOverall();ensureJobPolling();}
+  }
 }
-function retry(index){
+async function retry(index){
   const card=cards[index];if(!card)return;
   if(card.status==='info-error'||card.status==='info-cancelled'){const url=card.url;cards[index]={status:'deleted',url,batchId:card.batchId};renderCards();startFetch([url]);return;}
-  card.status='ready';card.progress=0;card.speed='';card.eta='';card.cancelRequested=false;renderCards();downloadOne(index);
+  if(!['error','cancelled'].includes(card.status))return;
+  if(!card.jobId){startNewDownload(index,true);return;}
+  // Retry the same server job in place: it keeps its id, batch and the
+  // originally requested quality/group, so a reload shows one card for it.
+  const jobId=card.jobId;
+  markQueued(card);card.awaitingRetry=true;renderCards();updateOverall();
+  try{
+    const data=await apiJson('/api/retry/'+encodeURIComponent(jobId),{method:'POST'});
+    if(cards[index]!==card||card.jobId!==jobId)return;
+    card.awaitingRetry=false;
+    applyJobUpdate(index,data); // carries the new attempt number
+  }catch(error){
+    if(cards[index]!==card||card.jobId!==jobId)return;
+    card.awaitingRetry=false;
+    if(error.status===404){startNewDownload(index,true);return;}
+    const job=error.data?.job;
+    if(error.status===409&&job&&ACTIVE_DOWNLOAD_STATES.includes(job.status)){
+      // Still running server-side (e.g. after a lost connection): re-attach.
+      card.attempt=Number(job.attempt)||card.attempt||1;applyJobUpdate(index,job);
+    }else{
+      Object.assign(card,{status:'error',error:error.message,serverSettled:true});scheduleRender();
+    }
+  }
+  if(card.cancelRequested)requestCancel(index);
+  ensureJobPolling();
 }
 function clearCards(){
-  cards.forEach(card=>{if(card?.pollTimer)clearInterval(card.pollTimer);if(card?.jobId&&ACTIVE_DOWNLOAD_STATES.includes(card.status))fetch('/api/cancel/'+encodeURIComponent(card.jobId),{method:'POST'}).catch(()=>{});});
-  Object.keys(fetchIntervals).forEach(clearFetchPoll);fetchBatchProgress.clear();cards=[];renderCards();hideOverall();
+  // Stop what is still running and drop the server-side records too, so a
+  // reload doesn't bring every old failed/stopped card back.
+  const jobIds=cards.filter(card=>card?.jobId&&card.status!=='deleted').map(card=>card.jobId);
+  if(jobIds.length)postJson('/api/jobs/dismiss',{job_ids:jobIds}).then(()=>scheduleLibraryRefresh()).catch(()=>{});
+  const fetchIds=[...new Set([...cards.map(card=>card?.batchId).filter(Boolean),...activeFetchBatchIds()])];
+  if(fetchIds.length)postJson('/api/fetch/dismiss',{batch_ids:fetchIds}).catch(()=>{});
+  Object.keys(fetchIntervals).forEach(clearFetchPoll);fetchBatchProgress.clear();cards=[];
+  trackedBatches.clear();clearTimeout(overallCollapseTimer);overallCollapseTimer=null;
+  renderCards();hideOverall();
 }
 async function downloadIndexes(indexes){
   const ready=[...new Set(indexes)].filter(index=>cards[index]?.status==='ready');
   if(!ready.length){toast('Nothing to download');return;}
   if(ready.length===1){downloadOne(ready[0]);return;}
-  const overall=document.getElementById('overall');overall.classList.add('show');overall.classList.remove('collapsed');
-  ready.forEach(index=>{Object.assign(cards[index],{status:'queued',progress:0,speed:'',eta:'',selected:false,cancelRequested:false});});
-  renderCards();updateOverall({completed:0,total:ready.length,overall_progress:0,errored:0,cancelled:0,finished:false});
+  const targets=ready.map(index=>({index,card:cards[index],payload:downloadPayload(cards[index])}));
+  targets.forEach(({card,payload})=>{markQueued(card);rememberRequest(card,payload);Object.assign(card,{jobId:null,attempt:1,downloadBatch:null});});
+  renderCards();
   try{
-    const data=await apiJson('/api/batch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({items:ready.map(index=>downloadPayload(cards[index]))})});
-    (data.jobs||[]).forEach((job,position)=>{const index=ready[position];if(index==null)return;cards[index].jobId=job.job_id;if(cards[index].cancelRequested)fetch('/api/cancel/'+encodeURIComponent(job.job_id),{method:'POST'}).catch(()=>{});});
-    pollBatch(data.batch_id);
-  }catch(error){ready.forEach(index=>{cards[index].status='error';cards[index].error=error.message;});renderCards();hideOverall();}
+    const data=await postJson('/api/batch',{items:targets.map(target=>target.payload)});
+    (data.jobs||[]).forEach((job,position)=>{
+      const target=targets[position];if(!target)return;
+      if(cards[target.index]!==target.card){discardJob(job.job_id);return;}
+      Object.assign(target.card,{jobId:job.job_id,attempt:1,downloadBatch:data.batch_id});
+      if(target.card.cancelRequested)requestCancel(target.index);
+    });
+    trackBatch(data.batch_id);
+    ensureJobPolling();
+  }catch(error){
+    targets.forEach(({index,card})=>{if(cards[index]===card)Object.assign(card,{status:'error',error:error.message,serverSettled:true});});
+    renderCards();
+  }
 }
 function downloadAll(){
   const missing=missingReadyIndexes();
   if(!missing.length){toast('All fetched files are already on the server');return;}
   downloadIndexes(missing);
 }
-function pollBatch(batchId){
-  if(!batchId||batchPollTimers.has(batchId))return;
-  document.getElementById('overall').classList.add('show');
-  const timer=setInterval(async()=>{
-    try{
-      const data=await apiJson('/api/batch/'+encodeURIComponent(batchId));
-      (data.jobs||[]).forEach(job=>{const index=cards.findIndex(card=>card?.jobId===job.job_id);if(index>=0)applyJobUpdate(index,job);});
-      updateOverall(data);
-      if(data.finished){clearInterval(timer);batchPollTimers.delete(batchId);scheduleLibraryRefresh();setTimeout(()=>{if(!batchPollTimers.size)collapseOverall();},5000);}
-    }catch{}
-  },800);
-  batchPollTimers.set(batchId,timer);
+// The overall bar sums every tracked batch from the cards themselves. It used
+// to show whichever batch's poll answered last, so two concurrent batches
+// made it flicker between their numbers.
+const trackedBatches=new Set();
+let overallCollapseTimer=null;
+function trackBatch(batchId){
+  if(!batchId)return;
+  trackedBatches.add(batchId);
+  clearTimeout(overallCollapseTimer);overallCollapseTimer=null;
+  const overall=document.getElementById('overall');overall.classList.add('show');overall.classList.remove('collapsed');
+  updateOverall();
 }
-function updateOverall(data){
-  const total=Number(data.total)||0,completed=Number(data.completed)||0,pct=Math.round(Number(data.overall_progress)||0);
+function updateOverall(){
+  if(!trackedBatches.size)return;
+  const members=cards.filter(card=>card&&card.status!=='deleted'&&card.jobId&&trackedBatches.has(card.downloadBatch));
+  const total=members.length;
+  if(!total){trackedBatches.clear();clearTimeout(overallCollapseTimer);overallCollapseTimer=null;hideOverall();return;}
+  let completed=0,errored=0,cancelled=0,sum=0;
+  members.forEach(card=>{
+    if(SETTLED_DOWNLOAD_STATES.includes(card.status)){completed++;sum+=100;if(card.status==='error')errored++;if(card.status==='cancelled')cancelled++;}
+    else sum+=Math.max(0,Math.min(100,Number(card.progress)||0));
+  });
+  const pct=Math.round(sum/total),finished=completed===total;
   document.getElementById('overallLabel').textContent=`${completed}/${total} · ${pct}%`;
   document.getElementById('overallFill').style.width=pct+'%';
   document.getElementById('overallMiniLabel').textContent=pct+'%';
-  const details=[];if(data.errored)details.push(`${data.errored} failed`);if(data.cancelled)details.push(`${data.cancelled} stopped`);
-  document.getElementById('overallSub').textContent=details.length?details.join(' · '):data.finished?'All done ✓':'Downloading…';
+  const details=[];if(errored)details.push(`${errored} failed`);if(cancelled)details.push(`${cancelled} stopped`);
+  document.getElementById('overallSub').textContent=details.length?details.join(' · '):finished?'All done ✓':'Downloading…';
+  if(finished&&!overallCollapseTimer){
+    scheduleLibraryRefresh();
+    overallCollapseTimer=setTimeout(()=>{
+      overallCollapseTimer=null;
+      const stillDone=cards.every(card=>!card||!trackedBatches.has(card.downloadBatch)||card.status==='deleted'||SETTLED_DOWNLOAD_STATES.includes(card.status));
+      if(stillDone){trackedBatches.clear();collapseOverall();}
+    },5000);
+  }else if(!finished&&overallCollapseTimer){clearTimeout(overallCollapseTimer);overallCollapseTimer=null;}
 }
 function collapseOverall(){const overall=document.getElementById('overall');if(overall.classList.contains('show'))overall.classList.add('collapsed');}
 function expandOverall(){document.getElementById('overall').classList.remove('collapsed');}
@@ -1656,19 +1873,25 @@ async function restoreBackendState(){
     const library=await apiJson('/api/library');
     (library.jobs||[]).forEach(job=>{
       if(cards.some(card=>card?.jobId===job.job_id))return;
-      const index=cards.length;
-      cards.push({url:job.url||'',status:job.status||'queued',title:job.title||'',thumbnail:job.thumbnail||'',jobId:job.job_id,filename:job.filename,progress:job.progress,speed:job.speed,eta:job.eta,size:job.size,downloaded:job.downloaded,error:job.error,deduped:job.deduped,selected:false});
-      if(ACTIVE_DOWNLOAD_STATES.includes(job.status))pollCard(index);
+      const settled=SETTLED_DOWNLOAD_STATES.includes(job.status);
+      cards.push({url:job.url||'',status:job.status||'queued',title:job.title||'',thumbnail:job.thumbnail||'',jobId:job.job_id,attempt:Number(job.attempt)||1,filename:job.filename,progress:job.progress,speed:job.speed,eta:job.eta,size:job.size,downloaded:job.downloaded,error:job.error,deduped:job.deduped,selected:false,downloadBatch:job.batch_id||null,serverSettled:settled,cancelRequested:!settled&&!!job.cancelled,requested:{format:job.format||'video',format_id:job.format_id||null,group_id:job.group_id||''}});
+      if(job.batch_id&&!settled)trackBatch(job.batch_id);
     });
     renderCards();
-    for(const batchId of library.fetch_batches||[])await attachFetchBatch(batchId);
-    try{const active=await apiJson('/api/batches/active');(active.batches||[]).forEach(pollBatch);}catch{}
+    ensureJobPolling();
+    for(const batchId of library.fetch_batches||[])await attachFetchBatch(batchId,{restored:true});
   }catch{}
 }
 async function loadDownloaderConfig(){
   if(location.protocol==='file:')return;
   try{
-    const config=await apiJson('/api/config');
+    let config=await apiJson('/api/config');
+    // The server forgets the limit when it restarts; re-apply the user's
+    // saved choice instead of silently falling back to the default.
+    let saved='';try{saved=localStorage.getItem('reclip_concurrency')||'';}catch{}
+    if(saved&&Number(saved)!==Number(config.max_concurrent)){
+      try{config=await postJson('/api/config',{max_concurrent:Number(saved)});}catch{}
+    }
     if(config.max_concurrent)setCustomSelectValue('concSel',String(config.max_concurrent));
     if(config.fetch_concurrent){
       const select=document.getElementById('fetchConcSel');const value=String(config.fetch_concurrent);
@@ -1678,8 +1901,13 @@ async function loadDownloaderConfig(){
   }catch{}
 }
 async function setConcurrency(value){
-  try{await apiJson('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({max_concurrent:Number(value)})});}
-  catch(error){toast(error.message);}
+  try{
+    const config=await postJson('/api/config',{max_concurrent:Number(value)});
+    if(config.max_concurrent&&Number(config.max_concurrent)!==Number(value)){
+      setCustomSelectValue('concSel',String(config.max_concurrent));
+      toast(`This server allows at most ${config.max_concurrent} downloads at once`);
+    }
+  }catch(error){toast(error.message);}
 }
 async function setFetchConcurrency(value){
   try{

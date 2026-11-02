@@ -2,6 +2,7 @@ import copy
 import os
 import uuid
 import glob
+import itertools
 import json
 import re
 from html import unescape as html_unescape
@@ -15,7 +16,7 @@ import threading
 import time
 import sqlite3
 from collections import OrderedDict, deque
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, wait as futures_wait
 from urllib.parse import quote, unquote, urljoin, urlparse
 from urllib.request import Request, urlopen
 from flask import Flask, request, jsonify, send_file, render_template
@@ -28,15 +29,6 @@ app = Flask(__name__)
 # RECLIP_DOWNLOAD_DIR). This app downloads to the server, not the browser.
 DOWNLOAD_DIR = os.environ.get("RECLIP_DOWNLOAD_DIR") or os.path.join(os.path.dirname(__file__), "downloads")
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-
-# Bounded downloads: a batch of any size can be submitted, but only
-# `gate.limit` yt-dlp processes run at once; the rest wait as "queued".
-# The pool is sized to a hard ceiling; the live limit is enforced by the gate
-# so the user can change it on the fly without recreating the pool.
-MAX_POOL = int(os.environ.get("RECLIP_MAX_POOL", "8"))
-DOWNLOAD_TIMEOUT = int(os.environ.get("RECLIP_DOWNLOAD_TIMEOUT", "1800"))
-download_pool = ThreadPoolExecutor(max_workers=MAX_POOL)
-
 
 def _bounded_env_int(name, default, minimum, maximum):
     """Read an integer setting without letting a bad value break startup."""
@@ -54,6 +46,23 @@ def _bounded_env_float(name, default, minimum, maximum):
     except (TypeError, ValueError):
         value = float(default)
     return max(minimum, min(value, maximum))
+
+
+# Bounded downloads: a batch of any size can be submitted, but only
+# `gate.limit` yt-dlp processes run at once; the rest wait as "queued".
+# The pool is sized to a hard ceiling; the live limit is enforced by the gate
+# so the user can change it on the fly without recreating the pool.
+MAX_POOL = _bounded_env_int("RECLIP_MAX_POOL", 8, 1, 64)
+# Optional hard cap on one download's total wall-clock time (0 = no cap).
+# Multi-GB files at ordinary speeds legitimately take hours, so a fixed cap
+# used to kill healthy transfers; stall detection below is the real guard.
+DOWNLOAD_TIMEOUT = _bounded_env_int("RECLIP_DOWNLOAD_TIMEOUT", 0, 0, 7 * 86400)
+# Abort a transfer that has made no progress for this many seconds.
+DOWNLOAD_STALL_TIMEOUT = _bounded_env_int("RECLIP_STALL_TIMEOUT", 300, 30, 86400)
+# ffmpeg merges / audio extraction print nothing while they work, so the
+# post-processing phase gets a much longer silence allowance.
+PROCESSING_STALL_TIMEOUT = max(DOWNLOAD_STALL_TIMEOUT, 3600)
+download_pool = ThreadPoolExecutor(max_workers=MAX_POOL, thread_name_prefix="download")
 
 
 # Metadata extraction is network/process-bound. Keep each stage independently
@@ -95,12 +104,16 @@ _fetch_probe_executor = ThreadPoolExecutor(
 
 
 class DownloadGate:
-    """A resizable, cancellation-aware concurrency limiter.
+    """A resizable, cancellation-aware, first-in-first-out concurrency limiter.
 
     Wraps the condition variable, the live-adjustable limit, and the active
     counter in one place. It is essentially a semaphore whose permit count can
     change at runtime and whose waiters can bail out when their job is stopped
     — neither of which threading.Semaphore supports.
+
+    Waiters are admitted strictly by their job's submission sequence number.
+    A plain ``notify_all`` race let whichever parked thread woke first take a
+    freed slot, so a batch started in effectively random order.
     """
 
     def __init__(self, limit, ceiling):
@@ -108,20 +121,36 @@ class DownloadGate:
         self._active = 0
         self._ceiling = ceiling
         self._limit = max(1, min(int(limit), ceiling))
+        self._waiting = []  # submission sequence numbers of parked jobs
 
     @property
     def limit(self):
         return self._limit
 
+    @property
+    def active(self):
+        with self._cond:
+            return self._active
+
     def acquire(self, job):
         """Block until a slot is free. Returns False if the job is cancelled first."""
+        seq = job.get("seq") or 0
         with self._cond:
-            while self._active >= self._limit and not job.get("cancelled"):
-                self._cond.wait()
-            if job.get("cancelled"):
-                return False
-            self._active += 1
-            return True
+            self._waiting.append(seq)
+            try:
+                while not job.get("cancelled") and (
+                    self._active >= self._limit or min(self._waiting) != seq
+                ):
+                    self._cond.wait()
+                if job.get("cancelled"):
+                    return False
+                self._active += 1
+                return True
+            finally:
+                self._waiting.remove(seq)
+                # The next job in line (or one freed by a cancellation) must
+                # re-check now that the head of the queue has changed.
+                self._cond.notify_all()
 
     def release(self):
         with self._cond:
@@ -200,6 +229,15 @@ MAX_JOBS = int(os.environ.get("RECLIP_MAX_JOBS", "500"))
 
 jobs = {}
 batches = {}
+# Guards structural changes to ``jobs``/``batches`` (insert, delete, and the
+# iterations that must not race them). Request threads (gunicorn runs several)
+# and download workers touch both maps concurrently; iterating a dict while
+# another thread inserts raises "dictionary changed size during iteration".
+# Individual field updates on one job dict stay lock-free.
+jobs_lock = threading.RLock()
+# Monotonic submission order, used by the FIFO download gate and for listing
+# restored jobs in the order they were queued.
+_job_seq = itertools.count(1)
 rename_lock = threading.Lock()
 # Serializes operations that change a completed library file's path/identity.
 # MEGA enqueue uses the same guard so it can never retain a path midway through
@@ -1117,7 +1155,11 @@ def parse_ytdlp_json(stdout):
 
 
 def parse_progress_line(line):
-    """Return {percent, speed, eta, downloaded, total} for a progress line, else None."""
+    """Return {percent, speed, eta, downloaded, total, …} for a progress line, else None.
+
+    Besides the display strings, the raw byte counts and the file being
+    written are returned so callers can aggregate multi-file downloads.
+    """
     line = ANSI_RE.sub("", line).strip()
     if not line.startswith(PROGRESS_SENTINEL):
         return None
@@ -1125,17 +1167,22 @@ def parse_progress_line(line):
         d = json.loads(line[len(PROGRESS_SENTINEL):].strip())
     except ValueError:
         return None
+    if not isinstance(d, dict):
+        return None
 
     def clean(v):
-        v = (v or "").strip()
+        v = (v if isinstance(v, str) else "").strip()
         return "" if v in ("Unknown", "Unknown B/s", "N/A", "NA", "") else v
 
-    downloaded_bytes = d.get("downloaded_bytes")
-    total_bytes = d.get("total_bytes") or d.get("total_bytes_estimate")
+    def number(v):
+        return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+    downloaded_bytes = number(d.get("downloaded_bytes"))
+    total_bytes = number(d.get("total_bytes")) or number(d.get("total_bytes_estimate"))
     percent = None
-    if isinstance(downloaded_bytes, (int, float)) and isinstance(total_bytes, (int, float)) and total_bytes > 0:
+    if downloaded_bytes is not None and total_bytes and total_bytes > 0:
         percent = round(downloaded_bytes / total_bytes * 100, 1)
-    elif isinstance(d.get("_percent"), (int, float)):
+    elif number(d.get("_percent")) is not None:
         percent = round(d["_percent"], 1)
 
     return {
@@ -1144,7 +1191,56 @@ def parse_progress_line(line):
         "eta": clean(d.get("_eta_str")),
         "downloaded": clean(d.get("_downloaded_bytes_str")),
         "total": clean(d.get("_total_bytes_str")) or clean(d.get("_total_bytes_estimate_str")),
+        "downloaded_bytes": downloaded_bytes,
+        "total_bytes": total_bytes,
+        "filename": d.get("filename") if isinstance(d.get("filename"), str) else None,
     }
+
+
+class _ProgressAggregator:
+    """Fold yt-dlp's per-file progress into one percentage that never goes back.
+
+    A ``bestvideo+bestaudio`` download fetches two files one after another and
+    yt-dlp restarts its percentage at 0 for the second, so the bar used to
+    jump from 100% back to 0%. Bytes of finished files are carried forward,
+    and fragment-based size estimates that wobble are clamped monotonic.
+    """
+
+    def __init__(self):
+        self.done_bytes = 0
+        self.file = None
+        self.file_total = 0
+        self.file_downloaded = 0
+        self.percent = 0.0
+
+    def update(self, progress):
+        name = progress.get("filename")
+        if name and name != self.file:
+            if self.file is not None:
+                self.done_bytes += max(self.file_total, self.file_downloaded)
+            self.file = name
+            self.file_total = 0
+            self.file_downloaded = 0
+        if progress.get("downloaded_bytes") is not None:
+            self.file_downloaded = progress["downloaded_bytes"]
+        if progress.get("total_bytes"):
+            self.file_total = progress["total_bytes"]
+
+        percent = None
+        if self.file_total > 0:
+            percent = ((self.done_bytes + self.file_downloaded)
+                       / (self.done_bytes + self.file_total) * 100)
+        elif progress.get("percent") is not None and not self.done_bytes:
+            percent = progress["percent"]
+        if percent is not None:
+            self.percent = max(self.percent, min(round(percent, 1), 100.0))
+
+        downloaded = progress.get("downloaded") or ""
+        total = progress.get("total") or ""
+        if self.done_bytes and self.file_total:
+            downloaded = _fmt_bytes(self.done_bytes + self.file_downloaded)
+            total = _fmt_bytes(self.done_bytes + self.file_total)
+        return self.percent, downloaded, total
 
 
 def kill_proc(proc):
@@ -1166,14 +1262,32 @@ def kill_proc(proc):
             pass
 
 
-def run_ytdlp_streaming(job, cmd, timeout):
+def _fmt_duration(seconds):
+    seconds = int(seconds or 0)
+    if seconds >= 3600 and seconds % 3600 == 0:
+        return f"{seconds // 3600} h"
+    if seconds >= 60:
+        return f"{seconds // 60} min"
+    return f"{seconds} s"
+
+
+def run_ytdlp_streaming(job, cmd, timeout=None, stall_timeout=None):
     """Run a yt-dlp download, streaming progress into ``job``.
 
-    Returns (returncode, tail_lines, timed_out). Progress ticks update
+    Returns (returncode, tail_lines, kill_reason). Progress ticks update
     job["progress"]/["speed"]/["eta"]; post-processing (merge / audio
-    extraction) flips the job into the "processing" status. A watchdog
-    hard-kills the process group at ``timeout`` even if it stops emitting output.
+    extraction) flips the job into the "processing" status.
+
+    A watchdog hard-kills the process group when it has printed nothing for
+    ``stall_timeout`` seconds (``PROCESSING_STALL_TIMEOUT`` while ffmpeg is
+    post-processing), or — only when a cap is configured — once the whole run
+    exceeds ``timeout``. ``kill_reason`` is None, "stalled", "processing" or
+    "timeout".
     """
+    if timeout is None:
+        timeout = DOWNLOAD_TIMEOUT
+    if stall_timeout is None:
+        stall_timeout = DOWNLOAD_STALL_TIMEOUT
     proc = subprocess.Popen(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, encoding="utf-8", errors="replace", bufsize=1,
@@ -1184,24 +1298,39 @@ def run_ytdlp_streaming(job, cmd, timeout):
         # A stop request landed between submit and Popen — kill right away.
         kill_proc(proc)
     tail = deque(maxlen=25)
-    killed = {"timeout": False}
+    started = time.monotonic()
+    last_activity = [started]
+    kill_reason = [None]
+    stop_watch = threading.Event()
 
-    def _kill():
-        killed["timeout"] = True
-        kill_proc(proc)
+    def _watch():
+        while not stop_watch.wait(1.0):
+            now = time.monotonic()
+            processing = job.get("status") == "processing"
+            idle_limit = PROCESSING_STALL_TIMEOUT if processing else stall_timeout
+            if timeout and now - started > timeout:
+                kill_reason[0] = "timeout"
+            elif idle_limit and now - last_activity[0] > idle_limit:
+                kill_reason[0] = "processing" if processing else "stalled"
+            else:
+                continue
+            kill_proc(proc)
+            return
 
-    watchdog = threading.Timer(timeout, _kill)
+    watchdog = threading.Thread(target=_watch, name="ytdlp-watchdog", daemon=True)
     watchdog.start()
+    aggregate = _ProgressAggregator()
     try:
         for raw in proc.stdout:
+            last_activity[0] = time.monotonic()
             progress = parse_progress_line(raw)
             if progress:
-                if progress["percent"] is not None:
-                    job["progress"] = progress["percent"]
+                percent, downloaded, total = aggregate.update(progress)
+                job["progress"] = percent
                 job["speed"] = progress["speed"]
                 job["eta"] = progress["eta"]
-                job["downloaded"] = progress["downloaded"]
-                job["total_size"] = progress["total"]
+                job["downloaded"] = downloaded
+                job["total_size"] = total
                 job["status"] = "downloading"
                 continue
             clean = ANSI_RE.sub("", raw).strip()
@@ -1217,13 +1346,13 @@ def run_ytdlp_streaming(job, cmd, timeout):
         # unwind, otherwise it keeps downloading with the watchdog cancelled.
         kill_proc(proc)
     finally:
-        watchdog.cancel()
+        stop_watch.set()
         try:
             proc.wait()
         except Exception:
             pass
         job["proc"] = None
-    return proc.returncode, list(tail), killed["timeout"]
+    return proc.returncode, list(tail), kill_reason[0]
 
 
 def remove_job_files(job_id, keep=None):
@@ -1960,7 +2089,7 @@ def _move_library_items(selection, target_group_id):
         for item in planned:
             if item["unchanged"]:
                 continue
-            for job in jobs.values():
+            for _jid, job in _jobs_snapshot():
                 if job.get("file") == item["path"]:
                     if item["local_available"]:
                         job["file"] = item["destination"]
@@ -2038,7 +2167,7 @@ def _delete_local_library_items(selection):
                 raise LibraryMoveError(
                     f"Could not delete the local file: {exc}", 500
                 ) from exc
-            for job in jobs.values():
+            for _jid, job in _jobs_snapshot():
                 if job.get("file") == item["path"]:
                     job["file"] = None
 
@@ -2051,33 +2180,248 @@ def _delete_local_library_items(selection):
         }
 
 
+ACTIVE_JOB_STATES = ("queued", "resolving", "downloading", "processing")
+SETTLED_JOB_STATES = ("done", "error", "cancelled")
+RETRYABLE_JOB_STATES = ("error", "cancelled")
+
+
 def finalize_cancelled(job, job_id):
     """Mark a job stopped and remove any partial files it left behind."""
-    job["status"] = "cancelled"
     job["speed"] = ""
     job["eta"] = ""
     job["proc"] = None
     remove_job_files(job_id)
+    # Status goes last: once a poller sees "cancelled" the job may be retried
+    # in place, and a late cleanup must never delete the new attempt's files.
+    job["status"] = "cancelled"
 
 
 class _Cancelled(Exception):
     """Raised inside run_download when the job has been stopped."""
 
 
-def _attempt_download(job, job_id, cmd, timeout_msg):
+def _watchdog_message(reason, timeout_msg=None):
+    if reason == "timeout":
+        return timeout_msg or (
+            f"Download timed out ({_fmt_duration(DOWNLOAD_TIMEOUT)} limit)"
+        )
+    if reason == "processing":
+        return (
+            "Post-processing made no progress for "
+            f"{_fmt_duration(PROCESSING_STALL_TIMEOUT)}"
+        )
+    return f"Download stalled: no progress for {_fmt_duration(DOWNLOAD_STALL_TIMEOUT)}"
+
+
+def _attempt_download(job, job_id, cmd, timeout_msg=None):
     """Run one yt-dlp attempt. Returns (ok, tail); raises _Cancelled if stopped."""
     job["status"] = "downloading"
     job["progress"] = 0.0
-    returncode, tail, timed_out = run_ytdlp_streaming(job, cmd, DOWNLOAD_TIMEOUT)
+    job["error"] = None
+    returncode, tail, kill_reason = run_ytdlp_streaming(job, cmd)
     if job.get("cancelled"):
         raise _Cancelled()
-    if timed_out:
+    if kill_reason:
         job["status"] = "error"
-        job["error"] = timeout_msg
+        job["error"] = _watchdog_message(kill_reason, timeout_msg)
         return False, tail
     if returncode != 0:
         return False, tail
     return True, tail
+
+
+# ---- curl transfers ---------------------------------------------------------
+
+
+def _curl_transfer_args():
+    """curl flags shared by every media transfer.
+
+    A connection that stops delivering bytes is aborted (``--speed-limit`` /
+    ``--speed-time``) instead of capping the total duration, so a long but
+    healthy download is never killed halfway through.
+    """
+    args = [
+        "--connect-timeout", "30", "--retry", "2", "--retry-delay", "1",
+        "--retry-connrefused",
+        "--speed-limit", "1", "--speed-time", str(DOWNLOAD_STALL_TIMEOUT),
+        "-A", USER_AGENT, "-H", "Accept: */*",
+    ]
+    if DOWNLOAD_TIMEOUT:
+        args += ["--max-time", str(DOWNLOAD_TIMEOUT)]
+    return args
+
+
+def _fmt_eta(seconds):
+    """yt-dlp style ETA ('4:05', '1:02:03')."""
+    seconds = max(0, int(seconds))
+    hours, rest = divmod(seconds, 3600)
+    minutes, secs = divmod(rest, 60)
+    return f"{hours}:{minutes:02d}:{secs:02d}" if hours else f"{minutes}:{secs:02d}"
+
+
+def _file_size(path):
+    try:
+        return os.path.getsize(path)
+    except OSError:
+        return 0
+
+
+def _remove_quietly(path):
+    if not path:
+        return
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def _mark_transfer_complete(job):
+    job["progress"] = 100.0
+    job["speed"] = ""
+    job["eta"] = ""
+
+
+class _SpeedMeter:
+    """Throughput over the last second-ish window, not since the start."""
+
+    def __init__(self, start_bytes=0):
+        self.prev = start_bytes
+        self.prev_t = time.monotonic()
+
+    def sample(self, job, current, total):
+        now = time.monotonic()
+        elapsed = now - self.prev_t
+        if elapsed < 1:
+            return
+        speed = (current - self.prev) / elapsed
+        if speed > 0:
+            job["speed"] = f"{_fmt_bytes(int(speed))}/s"
+            job["eta"] = _fmt_eta((total - current) / speed) if total else ""
+        else:
+            job["speed"] = ""
+            job["eta"] = ""
+        self.prev, self.prev_t = current, now
+
+
+_CURL_HTTP_STATUS_RE = re.compile(r"returned error:?\s*(\d{3})", re.IGNORECASE)
+# curl exit codes that describe a flaky connection rather than a bad URL.
+_CURL_TRANSIENT_EXITS = {7, 18, 28, 35, 52, 55, 56, 92}
+
+
+def _curl_failure(tail, rc, host):
+    """Return (message, retryable) for a failed curl transfer."""
+    tail = (tail or "").strip()
+    lowered = tail.lower()
+    match = _CURL_HTTP_STATUS_RE.search(tail)
+    status = int(match.group(1)) if match else None
+    if status in (401, 403, 429) or any(
+        word in lowered for word in ("too many", "rate limit", "throttl")
+    ):
+        label = f"HTTP {status}" if status else "throttled"
+        return (
+            f"Rate-limited by the {host} host ({label}). The host is temporarily "
+            "blocking rapid requests. Wait a minute and press Retry.",
+            True,
+        )
+    if "too slow" in lowered:
+        return (
+            f"Download stalled: no progress for {_fmt_duration(DOWNLOAD_STALL_TIMEOUT)}",
+            True,
+        )
+    if rc == 28 and DOWNLOAD_TIMEOUT:
+        return f"Download timed out ({_fmt_duration(DOWNLOAD_TIMEOUT)} limit)", False
+    retryable = (status is not None and 500 <= status < 600) or (
+        status is None and rc in _CURL_TRANSIENT_EXITS
+    )
+    return f"Download failed: {tail or f'curl exit {rc}'}", retryable
+
+
+def _curl_single_stream(job, part_path, url, referer, transfer_info, host="video", *,
+                        cookie=None, explain_error=None):
+    """Stream ``url`` into ``part_path`` with one curl, reporting progress.
+
+    ``cookie`` is sent with the request (session-bound hosts), and
+    ``explain_error(curl_stderr)`` may replace the generic failure message.
+
+    An existing partial file is resumed only when the server proved it honours
+    range requests; otherwise curl aborts with "doesn't support byte ranges"
+    and every retry would fail the same way, so the partial is discarded.
+    Returns True when the bytes are staged. On failure it records
+    ``job["error"]`` / ``job["retryable"]`` and returns False. Raises
+    _Cancelled when the job is stopped.
+    """
+    total = transfer_info.get("total")
+    resume = _file_size(part_path)
+    if resume and (
+        not transfer_info.get("range_supported") or (total and resume >= total)
+    ):
+        _remove_quietly(part_path)
+        resume = 0
+
+    cmd = ["curl", "-sS", "-L", "--fail", *_curl_transfer_args(),
+           "--output", part_path, "--continue-at", str(resume)]
+    if referer:
+        cmd += ["-e", referer]
+    if cookie:
+        cmd += ["-b", cookie]
+    cmd.append(url)
+
+    job["status"] = "downloading"
+    job["error"] = None
+    job["progress"] = (
+        min(round(resume / total * 100.0, 1), 100.0) if total else 0.0
+    )
+    proc = None
+    rc = None
+    tail = ""
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.PIPE, text=True,
+                                start_new_session=True)
+        job["proc"] = proc
+        meter = _SpeedMeter(resume)
+        while True:
+            if job.get("cancelled"):
+                kill_proc(proc)
+                raise _Cancelled()
+            try:
+                proc.wait(timeout=0.5)
+                done = True
+            except subprocess.TimeoutExpired:
+                done = False
+            cur = max(_file_size(part_path), resume)
+            job["downloaded"] = _fmt_bytes(cur)
+            if total:
+                job["total_size"] = _fmt_bytes(total)
+                job["progress"] = min(round(cur / total * 100.0, 1), 100.0)
+            meter.sample(job, cur, total)
+            if done:
+                break
+        tail = (proc.stderr.read() or "").strip()
+        rc = proc.returncode
+    except _Cancelled:
+        raise
+    except Exception as exc:
+        job["status"] = "error"
+        job["error"] = f"Download failed: {exc}"
+        job["retryable"] = False
+        return False
+    finally:
+        if proc is not None and proc.poll() is None:
+            kill_proc(proc)
+        if job.get("proc") is proc:
+            job["proc"] = None
+
+    if job.get("cancelled"):
+        raise _Cancelled()
+    if rc != 0:
+        message, retryable = _curl_failure(tail, rc, host)
+        explained = explain_error(tail) if explain_error else None
+        job["status"] = "error"
+        job["error"] = explained or message
+        job["retryable"] = retryable
+        return False
+    return True
 
 
 # ---- Segmented parallel HTTP download --------------------------------------
@@ -2105,11 +2449,8 @@ def _segmented_curl_download(
     started with its own session, so ``kill_proc(job["proc"])`` — the normal
     cancellation path — tears down every segment at once.
     """
-    try:
-        if os.path.getsize(part_path) > 0:
-            return None  # resume an existing partial with one ranged stream
-    except OSError:
-        pass
+    if _file_size(part_path) > 0:
+        return None  # resume an existing partial with one ranged stream
     if job.get("cancelled"):
         raise _Cancelled()
 
@@ -2139,9 +2480,7 @@ def _segmented_curl_download(
         seg = f"{part_path}.seg{i}"
         segs.append(seg)
         cmd = [
-            "curl", "-sS", "-L", "--fail", "--max-time", str(DOWNLOAD_TIMEOUT),
-            "--connect-timeout", "30", "--retry", "2", "--retry-delay", "1",
-            "--retry-connrefused", "-A", USER_AGENT, "-H", "Accept: */*",
+            "curl", "-sS", "-L", "--fail", *_curl_transfer_args(),
             "-r", f"{bounds[i]}-{bounds[i + 1] - 1}", "-o", seg,
         ]
         if referer:
@@ -2155,6 +2494,7 @@ def _segmented_curl_download(
 
     job["status"] = "downloading"
     job["progress"] = 0.0
+    job["error"] = None
     proc = None
     try:
         proc = subprocess.Popen(
@@ -2165,8 +2505,7 @@ def _segmented_curl_download(
             start_new_session=True,
         )
         job["proc"] = proc
-        prev = 0
-        prev_t = time.monotonic()
+        meter = _SpeedMeter()
         while True:
             if job.get("cancelled"):
                 kill_proc(proc)
@@ -2176,26 +2515,16 @@ def _segmented_curl_download(
                 done = True
             except subprocess.TimeoutExpired:
                 done = False
-            now = time.monotonic()
-            cur = sum(os.path.getsize(path) for path in segs if os.path.exists(path))
+            cur = sum(_file_size(path) for path in segs)
             job["downloaded"] = _fmt_bytes(cur)
             job["total_size"] = _fmt_bytes(total)
             job["progress"] = min(round(cur / total * 100.0, 1), 100.0)
-            elapsed = now - prev_t
-            if elapsed >= 1:
-                speed = (cur - prev) / elapsed
-                if speed > 0:
-                    job["speed"] = f"{_fmt_bytes(int(speed))}/s"
-                    job["eta"] = f"{int(max(0, total - cur) / speed)}s"
-                else:
-                    job["speed"] = ""
-                    job["eta"] = ""
-                prev, prev_t = cur, now
+            meter.sample(job, cur, total)
             if done:
                 break
 
         complete = proc.returncode == 0 and all(
-            os.path.getsize(path) == bounds[index + 1] - bounds[index]
+            _file_size(path) == bounds[index + 1] - bounds[index]
             for index, path in enumerate(segs)
         )
         if not complete:
@@ -2208,12 +2537,10 @@ def _segmented_curl_download(
                 with open(segment, "rb") as source:
                     shutil.copyfileobj(source, output, 1024 * 1024)
                 os.remove(segment)
-        if os.path.getsize(part_path) != total:
+        if _file_size(part_path) != total:
             return False
         job["downloaded"] = _fmt_bytes(total)
-        job["progress"] = 100.0
-        job["speed"] = ""
-        job["eta"] = ""
+        _mark_transfer_complete(job)
         return True
     except _Cancelled:
         raise
@@ -2225,24 +2552,47 @@ def _segmented_curl_download(
         if job.get("proc") is proc:
             job["proc"] = None
         for path in segs:
-            try:
-                os.remove(path)
-            except OSError:
-                pass
+            _remove_quietly(path)
 
 
-def _attempt_direct(job, job_id, media_url, referer, timeout_msg):
+def _stage_with_curl(job, part_path, url, referer, host, *, cookie=None,
+                     segmented=True, expected_size=None, explain_error=None):
+    """Probe once, then fetch via parallel segments or a single stream.
+
+    ``segmented=False`` skips the probe and the parallel ranges entirely (one
+    browser-like stream, sized by ``expected_size``); hosts that need a
+    ``cookie`` use that mode, since only the single stream sends it.
+    """
+    if segmented:
+        # The probe's size/final URL is shared by both transfer modes instead
+        # of making duplicate range/HEAD requests.
+        transfer_info = _media_transfer_info(url, referer)
+        if job.get("cancelled"):
+            raise _Cancelled()
+        if _segmented_curl_download(job, part_path, url, referer, transfer_info) is True:
+            return True
+    else:
+        # No probe means range support is unknown, so a stale partial is
+        # restarted rather than resumed (see _curl_single_stream).
+        transfer_info = {"total": expected_size, "range_supported": False}
+    return _curl_single_stream(job, part_path, url, referer, transfer_info, host,
+                               cookie=cookie, explain_error=explain_error)
+
+
+def _attempt_direct(job, job_id, media_url, referer, timeout_msg=None):
     """Last-resort stream a resolved media URL directly via curl.
 
     Used when yt-dlp refuses the resolved URL itself — the classic case is an
     embed/CDN whose get_file URL redirects to an opaque '.php' endpoint that
     yt-dlp skips for extension-safety reasons even though the URL streams real
     video once given the right Referer. Those streams sit behind Cloudflare,
-    which blocks
-    urllib/requests TLS fingerprints, so we shell out to curl with a browser
-    User-Agent and Referer. Only direct files are handled (HLS stays with
-    yt-dlp) and audio extraction is skipped. Returns True on success; on hard
-    failure it sets the job error (like _attempt_download's timeout path) and
+    which blocks urllib/requests TLS fingerprints, so we shell out to curl
+    with a browser User-Agent and Referer. Only direct files are handled (HLS
+    stays with yt-dlp) and audio extraction is skipped.
+
+    Returns True on success. When the direct path does not apply it returns
+    False without touching the job; on a real failure it sets the job error
+    (and ``job["retryable"]`` when a freshly resolved URL could help) and
     returns False.
     """
     if not media_url or re.search(r"\.m3u8(?:\?|$)", media_url, re.IGNORECASE):
@@ -2252,118 +2602,34 @@ def _attempt_direct(job, job_id, media_url, referer, timeout_msg):
 
     staged = os.path.join(DOWNLOAD_DIR, f"{job_id}.mp4")
     part_path = staged + ".part"
-    # Probe once, then reuse the size/final URL for both segmented transfer and
-    # single-stream progress instead of making duplicate range/HEAD requests.
-    transfer_info = _media_transfer_info(media_url, referer)
-    if _segmented_curl_download(
-        job, part_path, media_url, referer, transfer_info
-    ) is True:
-        if not _is_media_file(part_path):
-            job["status"] = "error"
-            job["error"] = (
-                "Direct download returned a non-video placeholder "
-                "(token may have expired)"
-            )
-            return False
-        os.replace(part_path, staged)
-        job["progress"] = 100.0
-        job["speed"] = ""
-        job["eta"] = ""
-        return True
-    total = transfer_info.get("total")
-    started = time.monotonic()
-    resume = os.path.getsize(part_path) if os.path.exists(part_path) else 0
-
-    cmd = ["curl", "-sS", "-L", "--fail", "--max-time", str(DOWNLOAD_TIMEOUT),
-           "--connect-timeout", "30", "--retry", "2", "--retry-delay", "1",
-           "--retry-connrefused", "--output", part_path,
-           "--continue-at", str(resume), "-A", USER_AGENT, "-H", "Accept: */*"]
-    if referer:
-        cmd += ["-e", referer]
-    cmd.append(media_url)
-
-    job["status"] = "downloading"
-    job["progress"] = 0.0
-    proc = None
-    tail = ""
-    try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
-                                stderr=subprocess.PIPE, text=True,
-                                start_new_session=True)
-        job["proc"] = proc
-        while True:
-            if job.get("cancelled"):
-                kill_proc(proc)
-                raise _Cancelled()
-            try:
-                proc.wait(timeout=0.5)
-                done = True
-            except subprocess.TimeoutExpired:
-                done = False
-            cur = os.path.getsize(part_path) if os.path.exists(part_path) else 0
-            cur = max(cur, resume)
-            job["downloaded"] = _fmt_bytes(cur)
-            if total:
-                job["progress"] = min(round(cur / total * 100.0, 1), 100.0)
-                job["total_size"] = _fmt_bytes(total)
-                elapsed = max(time.monotonic() - started, 1e-6)
-                speed = (cur - resume) / elapsed
-                if speed > 0:
-                    job["speed"] = f"{_fmt_bytes(int(speed))}/s"
-                    job["eta"] = f"{int(max(0, total - cur) / speed)}s"
-                else:
-                    job["speed"] = ""
-                    job["eta"] = ""
-            if done:
-                break
-        tail = (proc.stderr.read() or "").strip()
-        rc = proc.wait()
-        if rc != 0:
-            lowered = (tail or "").lower()
-            if "403" in lowered or "429" in lowered or "401" in lowered \
-                    or "too many" in lowered or "rate limit" in lowered \
-                    or "throttl" in lowered:
-                job["status"] = "error"
-                job["error"] = ("Rate-limited by the video host (HTTP 403). "
-                                 "The host is temporarily blocking rapid requests. "
-                                 "Wait a minute and press Retry.")
-            else:
-                job["status"] = "error"
-                job["error"] = f"Direct download failed: {tail or f'curl exit {rc}'}"
-            return False
-    except _Cancelled:
-        raise
-    except Exception as e:
-        job["status"] = "error"
-        job["error"] = f"Direct download failed: {e}"
+    job["retryable"] = False
+    if not _stage_with_curl(job, part_path, media_url, referer, "video"):
         return False
-    finally:
-        if proc is not None and proc.poll() is None:
-            kill_proc(proc)
-        job["proc"] = None
-
-    if job.get("cancelled"):
-        raise _Cancelled()
     if not _is_media_file(part_path):
+        # Never resume a later attempt on top of an HTML/GIF placeholder.
+        _remove_quietly(part_path)
         job["status"] = "error"
-        job["error"] = "Direct download returned a non-video placeholder (token may have expired)"
+        job["error"] = (
+            "Direct download returned a non-video placeholder "
+            "(token may have expired)"
+        )
+        job["retryable"] = True  # a re-resolved page hands out a fresh token
         return False
     os.replace(part_path, staged)
-    job["progress"] = 100.0
-    job["speed"] = ""
-    job["eta"] = ""
+    _mark_transfer_complete(job)
     return True
 
 
-def _attempt_plain_download(job, job_id, url, referer, filename, timeout_msg, *,
+def _attempt_plain_download(job, job_id, url, referer, filename, timeout_msg=None, *,
                             cookie=None, expected_size=None, segmented=True,
                             explain_error=None):
     """Stream a resolved *file* (zip / image / clip…) straight to disk via curl.
 
     signed_file_host providers hand back ordinary bytes under a real name —
     there is nothing for yt-dlp to extract and its media checks would reject
-    non-video payloads. This mirrors the curl loop from _attempt_direct but
-    stages under the file's own extension and accepts any non-empty payload.
+    non-video payloads. This shares the curl transfer used by _attempt_direct
+    but stages under the file's own extension and accepts any non-empty
+    payload.
 
     Hosts with session-bound files pass ``cookie``. ``expected_size`` (from
     the host's own listing) replaces the size probe and is verified at the
@@ -2375,97 +2641,14 @@ def _attempt_plain_download(job, job_id, url, referer, filename, timeout_msg, *,
     ext = os.path.splitext(filename)[1].lower()
     staged = os.path.join(DOWNLOAD_DIR, f"{job_id}{ext or '.bin'}")
     part_path = staged + ".part"
-    if segmented:
-        # Same parallel-segment fast path as _attempt_direct, sharing one
-        # probe with the single-stream fallback.
-        transfer_info = _media_transfer_info(url, referer)
-        if _segmented_curl_download(
-            job, part_path, url, referer, transfer_info
-        ) is True:
-            if not os.path.getsize(part_path):
-                job["status"] = "error"
-                job["error"] = "Downloaded file is empty (token may have expired)"
-                return False
-            os.replace(part_path, staged)
-            job["progress"] = 100.0
-            job["speed"] = ""
-            job["eta"] = ""
-            return True
-        total = transfer_info.get("total")
-    else:
-        total = expected_size
-    started = time.monotonic()
-    resume = os.path.getsize(part_path) if os.path.exists(part_path) else 0
-
-    cmd = ["curl", "-sS", "-L", "--fail", "--max-time", str(DOWNLOAD_TIMEOUT),
-           "--connect-timeout", "30", "--retry", "2", "--retry-delay", "1",
-           "--retry-connrefused", "--output", part_path,
-           "--continue-at", str(resume), "-A", USER_AGENT, "-H", "Accept: */*"]
-    if referer:
-        cmd += ["-e", referer]
-    if cookie:
-        cmd += ["-b", cookie]
-    cmd.append(url)
-
-    job["status"] = "downloading"
-    job["progress"] = 0.0
-    proc = None
-    try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
-                                stderr=subprocess.PIPE, text=True,
-                                start_new_session=True)
-        job["proc"] = proc
-        while True:
-            if job.get("cancelled"):
-                kill_proc(proc)
-                raise _Cancelled()
-            try:
-                proc.wait(timeout=0.5)
-                done = True
-            except subprocess.TimeoutExpired:
-                done = False
-            cur = os.path.getsize(part_path) if os.path.exists(part_path) else 0
-            cur = max(cur, resume)
-            job["downloaded"] = _fmt_bytes(cur)
-            if total:
-                job["progress"] = min(round(cur / total * 100.0, 1), 100.0)
-                job["total_size"] = _fmt_bytes(total)
-                elapsed = max(time.monotonic() - started, 1e-6)
-                speed = (cur - resume) / elapsed
-                if speed > 0:
-                    job["speed"] = f"{_fmt_bytes(int(speed))}/s"
-                    job["eta"] = f"{int(max(0, total - cur) / speed)}s"
-            if done:
-                break
-        tail = (proc.stderr.read() or "").strip()
-        rc = proc.wait()
-        if rc != 0:
-            lowered = (tail or "").lower()
-            explained = explain_error(tail) if explain_error else None
-            job["status"] = "error"
-            if explained:
-                job["error"] = explained
-            elif "403" in lowered or "429" in lowered or "401" in lowered:
-                job["error"] = ("Rate-limited by the file host (HTTP 403). "
-                                 "Wait a minute and press Retry.")
-            else:
-                job["error"] = f"File download failed: {tail or f'curl exit {rc}'}"
-            return False
-    except _Cancelled:
-        raise
-    except Exception as e:
-        job["status"] = "error"
-        job["error"] = f"File download failed: {e}"
+    job["retryable"] = False
+    if not _stage_with_curl(job, part_path, url, referer, "file", cookie=cookie,
+                            segmented=segmented, expected_size=expected_size,
+                            explain_error=explain_error):
         return False
-    finally:
-        if proc is not None and proc.poll() is None:
-            kill_proc(proc)
-        job["proc"] = None
-
-    if job.get("cancelled"):
-        raise _Cancelled()
-    received = os.path.getsize(part_path)
+    received = _file_size(part_path)
     if not received:
+        _remove_quietly(part_path)
         job["status"] = "error"
         job["error"] = "Downloaded file is empty (token may have expired)"
         return False
@@ -2473,7 +2656,7 @@ def _attempt_plain_download(job, job_id, url, referer, filename, timeout_msg, *,
         with open(part_path, "rb") as fh:
             head = fh.read(512).lstrip().lower()
         # A wrong-sized payload is useless as a resume base, so drop it.
-        os.remove(part_path)
+        _remove_quietly(part_path)
         job["status"] = "error"
         if head.startswith((b"<!doctype", b"<html")):
             job["error"] = ("The host sent a web page instead of the file "
@@ -2483,21 +2666,141 @@ def _attempt_plain_download(job, job_id, url, referer, filename, timeout_msg, *,
                             f"of {_fmt_bytes(expected_size)}. Retry.")
         return False
     os.replace(part_path, staged)
-    job["progress"] = 100.0
-    job["speed"] = ""
-    job["eta"] = ""
+    _mark_transfer_complete(job)
     return True
 
 
+DIRECT_ATTEMPTS = 3
+
+
+def _download_resolved(job, job_id, page_url, resolved, out_template,
+                       format_choice, format_id, timeout_msg=None):
+    """Download an already-resolved stream: yt-dlp first, then direct curl.
+
+    Returns (ok, tail). yt-dlp refuses some resolved URLs (e.g. a CDN redirect
+    ending in '.php') although the stream behind them is real video, so it is
+    pulled over plain HTTP instead. The streaming token is short-lived: on a
+    transient failure (403/429, 5xx, placeholder) the page is re-resolved for
+    a fresh, page-bound token before trying again.
+    """
+    cmd = build_ytdlp_command(
+        resolved["media_url"], output_template=out_template,
+        format_choice=format_choice, format_id=format_id,
+        referer=resolved.get("referer"),
+    )
+    ok, tail = _attempt_download(job, job_id, cmd, timeout_msg)
+    if ok or job.get("status") == "error":
+        return ok, tail
+
+    for attempt in range(DIRECT_ATTEMPTS):
+        if attempt:
+            job["status"] = "resolving"
+            time.sleep(1)
+            if job.get("cancelled"):
+                raise _Cancelled()
+            try:
+                fresh = resolve_embedded_media(page_url)
+            except Exception:
+                fresh = None
+            if job.get("cancelled"):
+                raise _Cancelled()
+            if not fresh:
+                break
+            resolved = fresh
+        if _attempt_direct(job, job_id, resolved["media_url"],
+                           resolved.get("referer"), timeout_msg):
+            return True, tail
+        if job.get("cancelled"):
+            raise _Cancelled()
+        if job.get("status") != "error" or not job.get("retryable"):
+            break  # not applicable (HLS/audio) or retrying won't help
+    return False, tail
+
+
+def _discard_thumb(thumb):
+    if thumb and os.path.dirname(os.path.abspath(thumb)) == os.path.abspath(
+        os.path.join(DOWNLOAD_DIR, THUMBS_SUBDIR)
+    ):
+        _remove_quietly(thumb)
+
+
+def _finalize_download(job, job_id, url, format_choice, format_id):
+    """Promote the staged file into the library, or reuse an identical copy."""
+    if job.get("cancelled"):
+        raise _Cancelled()
+    job["status"] = "processing"
+    job["speed"] = ""
+    job["eta"] = ""
+    chosen = pick_output_file(job_id, format_choice)
+    if not chosen:
+        raise RuntimeError("Download completed but no file was found")
+
+    # Probe while the file still has its private staging name: nothing else
+    # can reach it yet, and the slow ffmpeg work stays outside the library
+    # lock. The thumbnail is named after the job id, so it is unique.
+    duration = _probe_duration(chosen)
+    thumb = _make_thumb(chosen)
+
+    # Store + register atomically with respect to library moves/deletes
+    # (which hold the same lock while they plan file names): a group move
+    # could otherwise pick the very name this download is about to take,
+    # and a delete issued mid-finalization could leave an orphan file.
+    with library_mutation_lock:
+        if job.get("cancelled"):
+            _discard_thumb(thumb)
+            raise _Cancelled()
+        existing = find_existing_download(
+            job.get("video_id"), job.get("extractor"), url,
+            format_choice, format_id,
+        )
+        if existing and os.path.abspath(existing["file"]) != os.path.abspath(chosen):
+            # The same video+quality finished in another job while this one
+            # was running (duplicate links across batches). Keep one copy so
+            # the second file doesn't become an untracked orphan on disk.
+            remove_job_files(job_id)
+            _discard_thumb(thumb)
+            job["file"] = existing["file"]
+            job["filename"] = (existing.get("filename")
+                               or os.path.basename(existing["file"]))
+            job["deduped"] = True
+        else:
+            group_id = job.get("group_id") or None
+            target_dir = group_dir(group_id)
+            if target_dir is None:
+                group_id = None  # unknown or deleted while queued → ungrouped
+            final_path = store_final_file(
+                job_id, chosen, job.get("title"),
+                target_dir=target_dir or DOWNLOAD_DIR,
+            )
+            _register_download_locked(
+                job.get("video_id"), job.get("extractor"), job.get("title"),
+                url, format_choice, format_id, final_path,
+                duration=duration, thumb=thumb, group_id=group_id,
+            )
+            job["file"] = final_path
+            job["filename"] = os.path.basename(final_path)
+            job["group_id"] = group_id
+    _mark_transfer_complete(job)
+    job["error"] = None
+    # Status last so a poller never sees "done" before filename exists.
+    job["status"] = "done"
+
+
 def run_download(job_id, url, format_choice, format_id):
-    job = jobs[job_id]
+    with jobs_lock:
+        job = jobs.get(job_id)
+    if job is None:
+        return
     out_template = os.path.join(DOWNLOAD_DIR, f"{job_id}.%(ext)s")
-    timeout_msg = f"Download timed out ({DOWNLOAD_TIMEOUT // 60} min limit)"
+    timeout_msg = None
 
     def fail(message):
-        job["status"] = "error"
-        job["error"] = message
         remove_job_files(job_id)  # don't leak partial/.part files
+        job["error"] = message or "Download failed"
+        job["speed"] = ""
+        job["eta"] = ""
+        job["proc"] = None
+        job["status"] = "error"  # last, see finalize_cancelled
 
     acquired = False
     try:
@@ -2505,18 +2808,20 @@ def run_download(job_id, url, format_choice, format_id):
             finalize_cancelled(job, job_id)
             return
         # Wait for a free slot (honors the user's max-concurrent setting). The
-        # job stays "queued" until a slot opens up.
+        # job stays "queued" until a slot opens up; slots go out FIFO.
         acquired = gate.acquire(job)
         if not acquired:
             finalize_cancelled(job, job_id)
             return
 
-        # Provider-owned file hosts (signed_file_host kind) serve fixed files
-        # behind a signing dance, not adaptive streams: their wrapper pages
-        # mean nothing to yt-dlp, and the resolved URL is just bytes with a
-        # real filename. Detect those up front and pull the file over plain
-        # HTTP instead of going through the yt-dlp attempts at all.
-        resolved = None
+        # Another job may have produced this exact file while this one sat in
+        # the queue (the same link in two batches); reuse it instead.
+        if apply_dedup(job):
+            return
+
+        # GoFile and provider-owned hosts (configured in providers.json)
+        # expose their real file/stream only behind a site-specific flow;
+        # their wrapper pages mean nothing to yt-dlp. Resolve those up front.
         pre = None
         gofile_target = None
         if is_gofile_url(url):
@@ -2540,118 +2845,68 @@ def run_download(job_id, url, format_choice, format_id):
                 pre = None
             if job.get("cancelled"):
                 raise _Cancelled()
+
         if gofile_target:
-            resolved = gofile_target
             if not job.get("title"):
-                job["title"] = resolved["filename"]
+                job["title"] = gofile_target["filename"]
             # One stream, like gofile.io's own download button; the listing's
             # size catches an HTML error page served in place of the file.
             ok = _attempt_plain_download(
-                job, job_id, resolved["media_url"], resolved["referer"],
-                resolved["filename"], timeout_msg, cookie=resolved["cookie"],
-                expected_size=resolved["size"], segmented=False,
+                job, job_id, gofile_target["media_url"], gofile_target["referer"],
+                gofile_target["filename"], timeout_msg,
+                cookie=gofile_target["cookie"],
+                expected_size=gofile_target["size"], segmented=False,
                 explain_error=gofile.explain_download_error)
             if not ok:
                 gofile.invalidate(url)  # a Retry re-reads GoFile's flags
-            tail = [job.get("error") or "GoFile download failed"]
+            tail = ["GoFile download failed"]
         elif pre and pre.get("filename"):
-            resolved = pre
+            # signed_file_host providers serve fixed files with a real
+            # filename: pull the bytes over plain HTTP, no yt-dlp at all.
             if not job.get("title"):
-                job["title"] = resolved["filename"]
+                job["title"] = pre["filename"]
             ok = _attempt_plain_download(
-                job, job_id, resolved["media_url"], resolved.get("referer"),
-                resolved["filename"], timeout_msg)
-            tail = [job.get("error") or "Plain download failed"]
+                job, job_id, pre["media_url"], pre.get("referer"),
+                pre["filename"], timeout_msg)
+            tail = []
+        elif pre:
+            # The provider already resolved the stream; skip the doomed
+            # yt-dlp attempt on the wrapper page (same order as the fetch).
+            ok, tail = _download_resolved(
+                job, job_id, url, pre, out_template,
+                format_choice, format_id, timeout_msg)
         else:
             cmd = build_ytdlp_command(
                 url, output_template=out_template,
                 format_choice=format_choice, format_id=format_id,
             )
             ok, tail = _attempt_download(job, job_id, cmd, timeout_msg)
-
-        if not ok and job.get("status") != "error" and resolved is None:
-            # yt-dlp couldn't handle the page directly — try the embedded-media
-            # (JW Player / iframe) fallback, then re-run against the resolved URL.
-            job["status"] = "resolving"
-            try:
-                resolved = resolve_embedded_media(url)
-            except Exception:
-                resolved = None
-            if job.get("cancelled"):
-                raise _Cancelled()
-            if not resolved:
-                fail(tail[-1] if tail else "Download failed")
-                return
-            fallback_cmd = build_ytdlp_command(
-                resolved["media_url"], output_template=out_template,
-                format_choice=format_choice, format_id=format_id,
-                referer=resolved.get("referer"),
-            )
-            ok, tail = _attempt_download(job, job_id, fallback_cmd, timeout_msg)
-
             if not ok and job.get("status") != "error":
-                # yt-dlp refuses some resolved URLs (e.g. a CDN redirect ending
-                # in '.php'), but the stream behind them is real video — pull it
-                # over plain HTTP ourselves instead of giving up. The streaming
-                # token is short-lived, so on a transient failure (403/429) we
-                # re-resolve for a fresh, page-bound token and retry.
-                direct_tries = 3
-                while direct_tries > 0 and not ok:
-                    ok = _attempt_direct(job, job_id, resolved["media_url"],
-                                         resolved.get("referer"), timeout_msg)
-                    if ok:
-                        break
-                    if job.get("cancelled"):
-                        raise _Cancelled()
-                    direct_tries -= 1
-                    if direct_tries == 0:
-                        break
-                    err = job.get("error") or ""
-                    if not any(m in err for m in ("403", "401", "429", "5")):
-                        break  # non-transient — retrying won't help
-                    job["status"] = "resolving"
-                    try:
-                        resolved = resolve_embedded_media(url)
-                    except Exception:
-                        resolved = None
-                    if not resolved:
-                        break
-                    time.sleep(1)
+                # yt-dlp couldn't handle the page directly — try the
+                # embedded-media (JW Player / iframe) fallback.
+                job["status"] = "resolving"
+                try:
+                    resolved = resolve_embedded_media(url)
+                except Exception:
+                    resolved = None
+                if job.get("cancelled"):
+                    raise _Cancelled()
+                if resolved:
+                    ok, tail = _download_resolved(
+                        job, job_id, url, resolved, out_template,
+                        format_choice, format_id, timeout_msg)
 
         if not ok:
-            if job.get("status") != "error":
-                fail(tail[-1] if tail else "Download failed")
-            else:
-                remove_job_files(job_id)  # timeout set the message; still clean up
+            # The most recent attempt's own message (timeout, stall, HTTP
+            # status, placeholder) beats yt-dlp's last log line.
+            fail(job.get("error") or (tail[-1] if tail else "Download failed"))
             return
 
-        chosen = pick_output_file(job_id, format_choice)
-        if not chosen:
-            fail("Download completed but no file was found")
-            return
-
-        # Store the copy under a readable name, inside the chosen group folder
-        # when the download was assigned to one.
-        target_dir = group_dir(job.get("group_id")) or DOWNLOAD_DIR
-        final_path = store_final_file(job_id, chosen, job.get("title"), target_dir=target_dir)
-        job["file"] = final_path
-        job["filename"] = os.path.basename(final_path)
-        register_download(job.get("video_id"), job.get("extractor"),
-                          job.get("title"), url, format_choice, format_id, final_path,
-                          duration=_probe_duration(final_path),
-                          thumb=_make_thumb(final_path),
-                          group_id=job.get("group_id"))
-        job["progress"] = 100.0
-        job["speed"] = ""
-        job["eta"] = ""
-        # Set status last so a poller never sees "done" before filename exists.
-        job["status"] = "done"
+        _finalize_download(job, job_id, url, format_choice, format_id)
     except _Cancelled:
         finalize_cancelled(job, job_id)
     except Exception as e:
-        job["status"] = "error"
-        job["error"] = str(e)
-        remove_job_files(job_id)
+        fail(str(e) or e.__class__.__name__)
     finally:
         if acquired:
             gate.release()
@@ -3332,6 +3587,36 @@ def _stop_fetch_batch(batch_id):
         return _fetch_batch_public_locked(live) if live else None
 
 
+def _dismiss_fetch_batch(batch_id):
+    """Stop (if still running) and forget a fetch batch.
+
+    Clearing the card list must stick: finished batches are otherwise
+    re-attached on every reload for a grace period, and an unfinished one
+    would keep fetching and then auto-download into a list the user cleared.
+    """
+    with fetch_lock:
+        batch = fetch_batches.get(batch_id)
+        if not batch:
+            return False
+        finished = bool(batch.get("finished"))
+    if not finished:
+        _stop_fetch_batch(batch_id)
+    with fetch_lock:
+        fetch_batches.pop(batch_id, None)
+    fetch_gate.wake_all()
+    return True
+
+
+@app.route("/api/fetch/dismiss", methods=["POST"])
+def dismiss_fetch_batches_route():
+    data = request.get_json(silent=True) or {}
+    ids = data.get("batch_ids")
+    if not isinstance(ids, list):
+        return jsonify({"error": "batch_ids must be a list"}), 400
+    dismissed = sum(1 for batch_id in ids[:500] if _dismiss_fetch_batch(str(batch_id)))
+    return jsonify({"ok": True, "dismissed": dismissed})
+
+
 @app.route("/api/fetch", methods=["POST"])
 def start_fetch_batch_route():
     data = request.get_json(silent=True) or {}
@@ -3385,22 +3670,40 @@ def fetch_batch_list_route():
     return jsonify({"batches": active})
 
 
-def _evict_old_jobs():
-    """Bound the in-memory job map. Only settled failures/stops are dropped;
-    'done' records are kept because /api/file still serves their file."""
-    if len(jobs) <= MAX_JOBS:
+def _jobs_snapshot():
+    """A stable list of (job_id, job) pairs that is safe to iterate."""
+    with jobs_lock:
+        return list(jobs.items())
+
+
+def _evict_old_jobs_locked():
+    """Bound the in-memory job map. Only settled failures/stops are dropped
+    (oldest first); 'done' records are kept because /api/file still serves
+    their file. Caller holds jobs_lock."""
+    excess = len(jobs) - MAX_JOBS
+    if excess < 0:
         return
     removable = [jid for jid, j in jobs.items()
-                 if j.get("status") in ("error", "cancelled")]
-    for jid in removable[:len(jobs) - MAX_JOBS]:
+                 if j.get("status") in RETRYABLE_JOB_STATES]
+    for jid in removable[:excess + 1]:
         jobs.pop(jid, None)
+        _drop_from_batches_locked(jid)
+
+
+def _drop_from_batches_locked(job_id):
+    for batch_id, ids in list(batches.items()):
+        if job_id in ids:
+            remaining = [j for j in ids if j != job_id]
+            if remaining:
+                batches[batch_id] = remaining
+            else:
+                batches.pop(batch_id, None)
 
 
 def new_job(url, title, format_choice, format_id, batch_id=None, thumbnail=None, group_id=None):
     """Register a queued job and return its id."""
-    _evict_old_jobs()
     job_id = uuid.uuid4().hex[:10]
-    jobs[job_id] = {
+    job = {
         "status": "queued",
         "url": url,
         "title": title or "",
@@ -3423,7 +3726,16 @@ def new_job(url, title, format_choice, format_id, batch_id=None, thumbnail=None,
         "video_id": None,
         "extractor": None,
         "deduped": False,
+        "retryable": False,
+        # Bumped by every in-place retry so clients can discard responses
+        # that describe an earlier attempt.
+        "attempt": 1,
+        "seq": next(_job_seq),
+        "created_at": time.time(),
     }
+    with jobs_lock:
+        _evict_old_jobs_locked()
+        jobs[job_id] = job
     return job_id
 
 
@@ -3432,6 +3744,7 @@ def job_public(job_id, job):
     return {
         "job_id": job_id,
         "url": job.get("url"),
+        "title": job.get("title") or "",
         "status": job.get("status"),
         "progress": round(job.get("progress") or 0.0, 1),
         "speed": job.get("speed") or "",
@@ -3439,15 +3752,22 @@ def job_public(job_id, job):
         "downloaded": job.get("downloaded") or "",
         "size": job.get("total_size") or "",
         "filename": job.get("filename"),
+        "format": job.get("format"),
+        "format_id": job.get("format_id"),
+        "group_id": job.get("group_id") or "",
         "error": job.get("error"),
         "deduped": bool(job.get("deduped")),
+        "cancelled": bool(job.get("cancelled")),
+        "batch_id": job.get("batch_id"),
+        "attempt": job.get("attempt") or 1,
     }
 
 
 def cancel_job(job_id):
     """Stop a queued or running download. Returns True if there was work to stop."""
-    job = jobs.get(job_id)
-    if not job or job.get("status") in ("done", "error", "cancelled"):
+    with jobs_lock:
+        job = jobs.get(job_id)
+    if not job or job.get("status") in SETTLED_JOB_STATES:
         return False
 
     job["cancelled"] = True
@@ -3477,36 +3797,111 @@ def cancel_job(job_id):
 def _file_referenced_by_other_job(path, exclude_job_id):
     """True if any job other than exclude_job_id points at the same on-disk file."""
     return any(jid != exclude_job_id and j.get("file") == path
-               for jid, j in jobs.items())
+               for jid, j in _jobs_snapshot())
 
 
 def delete_job(job_id):
     """Stop and forget a job, retaining linked library metadata when needed."""
-    job = jobs.get(job_id)
+    with jobs_lock:
+        job = jobs.get(job_id)
     if not job:
         return False
 
-    if job.get("status") not in ("done", "error", "cancelled"):
+    if job.get("status") not in SETTLED_JOB_STATES:
         cancel_job(job_id)
 
     # The finished file is stored under its title; staging/.part files under job id.
     # A deduped job shares its file with the original (and any other pointers),
     # so only remove/unregister the file when no other live job references it —
     # otherwise deleting a duplicate would destroy everyone's copy.
+    # (jobs_lock is never held across library locks: moves take them in the
+    # opposite order.)
     final = job.get("file")
     if final and not _file_referenced_by_other_job(final, job_id):
         _remove_local_library_file(final)
     remove_job_files(job_id)
 
-    jobs.pop(job_id, None)
-    for batch_id, ids in list(batches.items()):
-        if job_id in ids:
-            remaining = [j for j in ids if j != job_id]
-            if remaining:
-                batches[batch_id] = remaining
-            else:
-                batches.pop(batch_id, None)
+    with jobs_lock:
+        jobs.pop(job_id, None)
+        _drop_from_batches_locked(job_id)
     return True
+
+
+def dismiss_job(job_id):
+    """Forget a job record without deleting its library file.
+
+    Used when the user clears the download list: a still-running job is
+    stopped, and the record is dropped so a page reload doesn't resurrect
+    every old failed/stopped card. Completed files stay in the library.
+    """
+    with jobs_lock:
+        job = jobs.get(job_id)
+    if not job:
+        return False
+    if job.get("status") not in SETTLED_JOB_STATES:
+        cancel_job(job_id)
+    if job.get("status") != "done":
+        remove_job_files(job_id)
+    with jobs_lock:
+        jobs.pop(job_id, None)
+        _drop_from_batches_locked(job_id)
+    return True
+
+
+class JobConflict(Exception):
+    pass
+
+
+RETRY_WAIT_SECONDS = 10
+
+
+def retry_job(job_id):
+    """Re-queue a failed or stopped job in place and return it (None if unknown).
+
+    Retrying in place keeps the job id, its batch membership and the
+    originally requested format/quality/group, so a reload shows one card per
+    download instead of the old failure plus a new copy. Raises JobConflict
+    when the job is not retryable right now.
+    """
+    with jobs_lock:
+        job = jobs.get(job_id)
+    if job is None:
+        return None
+    if job.get("status") not in RETRYABLE_JOB_STATES:
+        raise JobConflict("Only failed or stopped downloads can be retried")
+
+    # A stopped job's worker sets its final status just before it unwinds;
+    # let it fully exit so two workers never share the job's staging files.
+    future = job.get("future")
+    if future is not None and not future.done():
+        futures_wait([future], timeout=RETRY_WAIT_SECONDS)
+        if not future.done():
+            raise JobConflict("The previous attempt is still stopping; try again")
+
+    with jobs_lock:
+        if jobs.get(job_id) is not job or job.get("status") not in RETRYABLE_JOB_STATES:
+            raise JobConflict("This download was already retried")
+        remove_job_files(job_id)
+        job.update({
+            "status": "queued",
+            "progress": 0.0,
+            "speed": "",
+            "eta": "",
+            "downloaded": "",
+            "total_size": "",
+            "filename": None,
+            "file": None,
+            "error": None,
+            "cancelled": False,
+            "future": None,
+            "proc": None,
+            "deduped": False,
+            "retryable": False,
+            "attempt": (job.get("attempt") or 1) + 1,
+            "seq": next(_job_seq),
+        })
+    _submit_job(job_id, job)
+    return job
 
 
 def apply_dedup(job):
@@ -3520,9 +3915,20 @@ def apply_dedup(job):
     job["file"] = existing["file"]
     job["filename"] = existing.get("filename") or os.path.basename(existing["file"])
     job["progress"] = 100.0
+    job["speed"] = ""
+    job["eta"] = ""
+    job["error"] = None
     job["deduped"] = True
     job["status"] = "done"
     return True
+
+
+def _submit_job(job_id, job):
+    """Short-circuit on dedup, else hand the job to the download pool."""
+    if not apply_dedup(job):
+        job["future"] = download_pool.submit(
+            run_download, job_id, job["url"], job["format"], job.get("format_id")
+        )
 
 
 def launch_job(item, batch_id=None):
@@ -3533,90 +3939,97 @@ def launch_job(item, batch_id=None):
     job = jobs[job_id]
     job["video_id"] = item.get("id")
     job["extractor"] = item.get("extractor")
-    if not apply_dedup(job):
-        job["future"] = download_pool.submit(
-            run_download, job_id, item["url"], item["format"], item.get("format_id")
-        )
+    _submit_job(job_id, job)
     return job_id
+
+
+def _download_item(data):
+    """Normalize one client download request; returns None when it has no URL."""
+    if not isinstance(data, dict):
+        return None
+    url = str(data.get("url") or "").strip()
+    if not url:
+        return None
+    format_choice = "audio" if data.get("format") == "audio" else "video"
+    format_id = data.get("format_id")
+    return {
+        "url": url,
+        "format": format_choice,
+        "format_id": str(format_id) if format_id not in (None, "") else None,
+        "title": str(data.get("title") or ""),
+        "id": data.get("id"),
+        "extractor": data.get("extractor"),
+        "thumbnail": str(data.get("thumbnail") or ""),
+        "group_id": data.get("group_id") or None,
+    }
 
 
 @app.route("/api/download", methods=["POST"])
 def start_download():
-    data = request.json or {}
-    url = data.get("url", "").strip()
-    format_choice = data.get("format", "video")
-    format_id = data.get("format_id")
-    title = data.get("title", "")
-
-    if not url:
+    item = _download_item(request.get_json(silent=True) or {})
+    if not item:
         return jsonify({"error": "No URL provided"}), 400
 
-    job_id = launch_job({
-        "url": url, "title": title, "format": format_choice,
-        "format_id": format_id, "id": data.get("id"), "extractor": data.get("extractor"),
-        "thumbnail": data.get("thumbnail", ""),
-        "group_id": data.get("group_id"),
-    })
+    job_id = launch_job(item)
     job = jobs[job_id]
     if job.get("deduped"):
         return jsonify({"job_id": job_id, "status": "done",
-                        "deduped": True, "filename": job["filename"]})
+                        "deduped": True, "filename": job["filename"],
+                        "attempt": job.get("attempt") or 1})
     return jsonify({"job_id": job_id})
 
 
 @app.route("/api/batch", methods=["POST"])
 def start_batch():
     """Queue many downloads at once. The worker pool bounds concurrency."""
-    data = request.json or {}
+    data = request.get_json(silent=True) or {}
     items = data.get("items")
     if not items:
         # Convenience form: {urls: [...], format, format_id}
-        urls = data.get("urls", [])
-        fmt = data.get("format", "video")
-        fid = data.get("format_id")
-        items = [{"url": u, "format": fmt, "format_id": fid, "title": ""} for u in urls]
+        urls = data.get("urls") or []
+        if not isinstance(urls, list):
+            return jsonify({"error": "urls must be a list"}), 400
+        items = [{"url": u, "format": data.get("format", "video"),
+                  "format_id": data.get("format_id"), "title": ""}
+                 for u in urls if isinstance(u, str)]
+    if not isinstance(items, list):
+        return jsonify({"error": "items must be a list"}), 400
 
-    normalized = []
-    for item in items:
-        item_url = (item.get("url") or "").strip()
-        if not item_url:
-            continue
-        normalized.append({
-            "url": item_url,
-            "format": item.get("format", "video"),
-            "format_id": item.get("format_id"),
-            "title": item.get("title", ""),
-            "id": item.get("id"),
-            "extractor": item.get("extractor"),
-            "thumbnail": item.get("thumbnail", ""),
-            "group_id": item.get("group_id"),
-        })
-
+    normalized = [item for item in map(_download_item, items) if item]
     if not normalized:
         return jsonify({"error": "No URLs provided"}), 400
 
     batch_id = uuid.uuid4().hex[:10]
-    job_ids = [launch_job(item, batch_id=batch_id) for item in normalized]
-    batches[batch_id] = job_ids
+    with jobs_lock:
+        # Register the batch first so /api/batches/active can see it while the
+        # jobs are still being queued.
+        batches[batch_id] = []
+    job_ids = []
+    for item in normalized:
+        job_id = launch_job(item, batch_id=batch_id)
+        job_ids.append(job_id)
+        with jobs_lock:
+            batches.setdefault(batch_id, []).append(job_id)
 
     # Order is preserved so the client can map jobs[k] back to its submitted item.
     return jsonify({
         "batch_id": batch_id,
-        "jobs": [{"job_id": j, "url": jobs[j]["url"]} for j in job_ids],
+        "jobs": [{"job_id": j, "url": jobs[j]["url"]} for j in job_ids if j in jobs],
     })
 
 
 @app.route("/api/batch/<batch_id>")
 def batch_status(batch_id):
-    job_ids = batches.get(batch_id)
+    with jobs_lock:
+        job_ids = list(batches.get(batch_id) or [])
+        members = [(job_id, jobs.get(job_id)) for job_id in job_ids]
     if not job_ids:
         return jsonify({"error": "Batch not found"}), 404
 
     items = []
     total = done = errored = cancelled = 0
     progress_sum = 0.0
-    for job_id in job_ids:
-        job = jobs.get(job_id)
+    for job_id, job in members:
         if not job:
             continue
         total += 1
@@ -3658,28 +4071,72 @@ def active_batches():
     overall-progress bar to whatever is still in flight instead of silently
     hiding it after a reload.
     """
-    active = []
-    for batch_id, job_ids in batches.items():
-        for jid in job_ids:
-            status = (jobs.get(jid) or {}).get("status")
-            if status in ("queued", "downloading", "processing", "resolving"):
-                active.append(batch_id)
-                break
+    with jobs_lock:
+        snapshot = [(batch_id, [jobs.get(jid) for jid in job_ids])
+                    for batch_id, job_ids in batches.items()]
+    active = [batch_id for batch_id, members in snapshot
+              if any((job or {}).get("status") in ACTIVE_JOB_STATES
+                     for job in members)]
     return jsonify({"batches": active})
 
 
 @app.route("/api/status/<job_id>")
 def check_status(job_id):
-    job = jobs.get(job_id)
+    with jobs_lock:
+        job = jobs.get(job_id)
     if not job:
         return jsonify({"error": "Job not found"}), 404
     return jsonify(job_public(job_id, job))
 
 
+@app.route("/api/jobs/status", methods=["POST"])
+def jobs_status():
+    """Status of many jobs in one round trip ({job_id: job | null}).
+
+    The UI polls every visible download through this instead of one request
+    per card per tick; unknown ids (e.g. after a server restart) map to null.
+    """
+    data = request.get_json(silent=True) or {}
+    ids = data.get("job_ids")
+    if not isinstance(ids, list):
+        return jsonify({"error": "job_ids must be a list"}), 400
+    ids = [str(job_id) for job_id in ids[:2000]]
+    with jobs_lock:
+        found = [(job_id, jobs.get(job_id)) for job_id in ids]
+    return jsonify({"jobs": {job_id: (job_public(job_id, job) if job else None)
+                             for job_id, job in found}})
+
+
+@app.route("/api/retry/<job_id>", methods=["POST"])
+def retry_download(job_id):
+    try:
+        job = retry_job(job_id)
+    except JobConflict as exc:
+        with jobs_lock:
+            job = jobs.get(job_id)
+        payload = {"error": str(exc)}
+        if job:
+            payload["job"] = job_public(job_id, job)
+        return jsonify(payload), 409
+    if job is None:
+        return jsonify({"error": "Job not found"}), 404
+    return jsonify(job_public(job_id, job))
+
+
+@app.route("/api/jobs/dismiss", methods=["POST"])
+def dismiss_jobs():
+    data = request.get_json(silent=True) or {}
+    ids = data.get("job_ids")
+    if not isinstance(ids, list):
+        return jsonify({"error": "job_ids must be a list"}), 400
+    dismissed = sum(1 for job_id in ids[:2000] if dismiss_job(str(job_id)))
+    return jsonify({"ok": True, "dismissed": dismissed})
+
+
 @app.route("/api/config", methods=["GET", "POST"])
 def config():
     if request.method == "POST":
-        data = request.json or {}
+        data = request.get_json(silent=True) or {}
         if "max_concurrent" in data:
             try:
                 gate.set_limit(data.get("max_concurrent"))
@@ -3700,17 +4157,20 @@ def config():
 
 @app.route("/api/cancel/<job_id>", methods=["POST"])
 def cancel_download(job_id):
-    if job_id not in jobs:
+    with jobs_lock:
+        job = jobs.get(job_id)
+    if job is None:
         return jsonify({"error": "Job not found"}), 404
     cancel_job(job_id)
-    return jsonify(job_public(job_id, jobs[job_id]))
+    return jsonify(job_public(job_id, job))
 
 
 @app.route("/api/delete/<job_id>", methods=["POST", "DELETE"])
 def delete_download(job_id):
     # Idempotent: deleting an unknown/already-gone job is a success.
     with library_mutation_lock:
-        job = jobs.get(job_id)
+        with jobs_lock:
+            job = jobs.get(job_id)
         path = job.get("file") if job else None
         if path:
             filename, gid = _library_identity_for_path(path)
@@ -3725,7 +4185,8 @@ def delete_download(job_id):
 
 @app.route("/api/file/<job_id>")
 def download_file(job_id):
-    job = jobs.get(job_id)
+    with jobs_lock:
+        job = jobs.get(job_id)
     if not job or job.get("status") != "done":
         return jsonify({"error": "File not ready"}), 404
     path = job.get("file")
@@ -3863,30 +4324,19 @@ def library():
                    key=lambda e: e["created_at"] or e["mtime"] or 0, reverse=True)
 
     # Live jobs (done jobs are covered by the file list above).
-    ljobs = []
-    for jid, j in list(jobs.items()):
+    live = []
+    for jid, j in _jobs_snapshot():
         status = j.get("status")
         if status == "done":
             continue
-        ljobs.append({
-            "job_id": jid,
-            "url": j.get("url") or "",
-            "status": status,
-            "progress": j.get("progress") or 0.0,
-            "speed": j.get("speed") or "",
-            "eta": j.get("eta") or "",
-            "downloaded": j.get("downloaded") or "",
-            "size": j.get("total_size") or "",
-            "filename": j.get("filename"),
-            "error": j.get("error"),
-            "deduped": bool(j.get("deduped")),
-            "title": j.get("title") or "",
-            "thumbnail": j.get("thumbnail") or "",
-            "cancelled": bool(j.get("cancelled")),
-        })
+        entry = job_public(jid, j)
+        entry["thumbnail"] = j.get("thumbnail") or ""
+        live.append((j.get("seq") or 0, entry))
     order = {"downloading": 0, "processing": 1, "resolving": 2,
              "queued": 3, "error": 4, "cancelled": 5}
-    ljobs.sort(key=lambda j: (order.get(j["status"], 9), j["job_id"]))
+    # Within a status, keep submission order (job ids are random hex).
+    live.sort(key=lambda pair: (order.get(pair[1]["status"], 9), pair[0]))
+    ljobs = [entry for _seq, entry in live]
 
     with fetch_lock:
         _prune_fetch_batches()
@@ -3962,7 +4412,7 @@ def library_delete():
             retained = _remove_local_library_file(path)
         except OSError as exc:
             return jsonify({"error": f"Could not delete the local file: {exc}"}), 500
-        for job in jobs.values():
+        for _jid, job in _jobs_snapshot():
             if job.get("file") == path:
                 job["file"] = None
     return jsonify({"ok": True, "record_retained": retained})
