@@ -19,6 +19,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from urllib.parse import quote, unquote, urljoin, urlparse
 from urllib.request import Request, urlopen
 from flask import Flask, request, jsonify, send_file, render_template
+from gofile_helper import GoFileClient, GoFileError, is_gofile_url
 from mega_helper import MegaHelper, MegaHelperError, is_mega_public_url
 from telegram_helper import TelegramHelperError, TelegramService
 
@@ -227,6 +228,10 @@ USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 )
+# GoFile folders/files are listed through GoFile's own signed API (see
+# gofile_helper.py); one shared client keeps its guest session, signer and
+# short listing cache across fetch and download workers.
+gofile = GoFileClient(USER_AGENT)
 # Some embed-host CDNs append their streaming token *after* a trailing slash
 # on the extension — ``…_720p.mp4/?v-acctoken=…`` — so a bare ``.mp4`` match
 # must be allowed to continue past the slash: that per-client access-token
@@ -2350,34 +2355,45 @@ def _attempt_direct(job, job_id, media_url, referer, timeout_msg):
     return True
 
 
-def _attempt_plain_download(job, job_id, url, referer, filename, timeout_msg):
+def _attempt_plain_download(job, job_id, url, referer, filename, timeout_msg, *,
+                            cookie=None, expected_size=None, segmented=True,
+                            explain_error=None):
     """Stream a resolved *file* (zip / image / clip…) straight to disk via curl.
 
     signed_file_host providers hand back ordinary bytes under a real name —
     there is nothing for yt-dlp to extract and its media checks would reject
     non-video payloads. This mirrors the curl loop from _attempt_direct but
     stages under the file's own extension and accepts any non-empty payload.
+
+    Hosts with session-bound files pass ``cookie``. ``expected_size`` (from
+    the host's own listing) replaces the size probe and is verified at the
+    end, so an error page served with HTTP 200 can't pass as the file.
+    ``segmented=False`` keeps to one stream like a browser would, and
+    ``explain_error(curl_stderr)`` may supply a host-specific failure message.
     Returns True on success; on failure it records the error and returns False.
     """
     ext = os.path.splitext(filename)[1].lower()
     staged = os.path.join(DOWNLOAD_DIR, f"{job_id}{ext or '.bin'}")
     part_path = staged + ".part"
-    # Same parallel-segment fast path as _attempt_direct, sharing one probe
-    # with the single-stream fallback.
-    transfer_info = _media_transfer_info(url, referer)
-    if _segmented_curl_download(
-        job, part_path, url, referer, transfer_info
-    ) is True:
-        if not os.path.getsize(part_path):
-            job["status"] = "error"
-            job["error"] = "Downloaded file is empty (token may have expired)"
-            return False
-        os.replace(part_path, staged)
-        job["progress"] = 100.0
-        job["speed"] = ""
-        job["eta"] = ""
-        return True
-    total = transfer_info.get("total")
+    if segmented:
+        # Same parallel-segment fast path as _attempt_direct, sharing one
+        # probe with the single-stream fallback.
+        transfer_info = _media_transfer_info(url, referer)
+        if _segmented_curl_download(
+            job, part_path, url, referer, transfer_info
+        ) is True:
+            if not os.path.getsize(part_path):
+                job["status"] = "error"
+                job["error"] = "Downloaded file is empty (token may have expired)"
+                return False
+            os.replace(part_path, staged)
+            job["progress"] = 100.0
+            job["speed"] = ""
+            job["eta"] = ""
+            return True
+        total = transfer_info.get("total")
+    else:
+        total = expected_size
     started = time.monotonic()
     resume = os.path.getsize(part_path) if os.path.exists(part_path) else 0
 
@@ -2387,6 +2403,8 @@ def _attempt_plain_download(job, job_id, url, referer, filename, timeout_msg):
            "--continue-at", str(resume), "-A", USER_AGENT, "-H", "Accept: */*"]
     if referer:
         cmd += ["-e", referer]
+    if cookie:
+        cmd += ["-b", cookie]
     cmd.append(url)
 
     job["status"] = "downloading"
@@ -2423,12 +2441,14 @@ def _attempt_plain_download(job, job_id, url, referer, filename, timeout_msg):
         rc = proc.wait()
         if rc != 0:
             lowered = (tail or "").lower()
-            if "403" in lowered or "429" in lowered or "401" in lowered:
-                job["status"] = "error"
+            explained = explain_error(tail) if explain_error else None
+            job["status"] = "error"
+            if explained:
+                job["error"] = explained
+            elif "403" in lowered or "429" in lowered or "401" in lowered:
                 job["error"] = ("Rate-limited by the file host (HTTP 403). "
                                  "Wait a minute and press Retry.")
             else:
-                job["status"] = "error"
                 job["error"] = f"File download failed: {tail or f'curl exit {rc}'}"
             return False
     except _Cancelled:
@@ -2444,9 +2464,23 @@ def _attempt_plain_download(job, job_id, url, referer, filename, timeout_msg):
 
     if job.get("cancelled"):
         raise _Cancelled()
-    if not os.path.getsize(part_path):
+    received = os.path.getsize(part_path)
+    if not received:
         job["status"] = "error"
         job["error"] = "Downloaded file is empty (token may have expired)"
+        return False
+    if expected_size and received != expected_size:
+        with open(part_path, "rb") as fh:
+            head = fh.read(512).lstrip().lower()
+        # A wrong-sized payload is useless as a resume base, so drop it.
+        os.remove(part_path)
+        job["status"] = "error"
+        if head.startswith((b"<!doctype", b"<html")):
+            job["error"] = ("The host sent a web page instead of the file "
+                            "(download blocked or session expired). Retry later.")
+        else:
+            job["error"] = (f"Download size mismatch: got {_fmt_bytes(received)} "
+                            f"of {_fmt_bytes(expected_size)}. Retry.")
         return False
     os.replace(part_path, staged)
     job["progress"] = 100.0
@@ -2484,7 +2518,21 @@ def run_download(job_id, url, format_choice, format_id):
         # HTTP instead of going through the yt-dlp attempts at all.
         resolved = None
         pre = None
-        if _provider_resolver_applies(url):
+        gofile_target = None
+        if is_gofile_url(url):
+            # GoFile files are plain bytes behind a guest-session cookie. Re-read
+            # GoFile's listing first: a file can be paused (server overloaded)
+            # or frozen between fetch and download, and GoFile's own UI refuses
+            # those too, so report its reason instead of fetching an error page.
+            job["status"] = "resolving"
+            try:
+                gofile_target = gofile.resolve_download(url)
+            except GoFileError as exc:
+                fail(str(exc))
+                return
+            if job.get("cancelled"):
+                raise _Cancelled()
+        elif _provider_resolver_applies(url):
             job["status"] = "resolving"
             try:
                 pre = resolve_provider(url)
@@ -2492,7 +2540,21 @@ def run_download(job_id, url, format_choice, format_id):
                 pre = None
             if job.get("cancelled"):
                 raise _Cancelled()
-        if pre and pre.get("filename"):
+        if gofile_target:
+            resolved = gofile_target
+            if not job.get("title"):
+                job["title"] = resolved["filename"]
+            # One stream, like gofile.io's own download button; the listing's
+            # size catches an HTML error page served in place of the file.
+            ok = _attempt_plain_download(
+                job, job_id, resolved["media_url"], resolved["referer"],
+                resolved["filename"], timeout_msg, cookie=resolved["cookie"],
+                expected_size=resolved["size"], segmented=False,
+                explain_error=gofile.explain_download_error)
+            if not ok:
+                gofile.invalidate(url)  # a Retry re-reads GoFile's flags
+            tail = [job.get("error") or "GoFile download failed"]
+        elif pre and pre.get("filename"):
             resolved = pre
             if not job.get("title"):
                 job["title"] = resolved["filename"]
@@ -2623,8 +2685,33 @@ def _direct_source_info(resolved):
     }
 
 
+def _gofile_card_info(url):
+    """Card metadata for one GoFile file, straight from GoFile's listing.
+
+    A file GoFile won't serve (overloaded server, cold storage, gated) raises
+    GoFileError, so it shows up as a fetch error with GoFile's reason and a
+    Retry button instead of a card whose download is doomed.
+    """
+    info = gofile.card_info(url)
+    size = info.get("size")
+    label = "Original file"
+    if isinstance(size, int) and size > 0:
+        label += f" · {_fmt_bytes(size)}"
+    return {
+        "title": info["title"],
+        "thumbnail": info["thumbnail"],
+        "duration": None,
+        "uploader": "",
+        "formats": [{"id": "direct", "label": label, "height": 0}],
+        "id": info.get("id"),
+        "extractor": "GoFile",
+    }
+
+
 def _extract_video_info(url):
     """Perform the expensive, cacheable portion of metadata extraction."""
+    if is_gofile_url(url):
+        return _gofile_card_info(url)
     # Configured providers exist specifically for wrappers yt-dlp cannot read.
     # Resolve those first rather than waiting for a doomed 60-second yt-dlp
     # attempt. A provider miss still falls through to the generic path.
@@ -2792,6 +2879,12 @@ def get_playlist_info():
     if not url:
         return jsonify({"error": "No URL provided"}), 400
 
+    if is_gofile_url(url):
+        try:
+            return jsonify({"urls": gofile.expand(url)})
+        except GoFileError as e:
+            return jsonify({"error": str(e)}), 400
+
     cmd = ["yt-dlp", "--flat-playlist", "-J", url]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
@@ -2822,6 +2915,13 @@ MAX_FETCH_BATCHES = 64
 
 def _expand_playlist_urls(url):
     """Return the individual video URLs for a playlist URL, else [url]."""
+    if is_gofile_url(url):
+        # One card per file. A folder that can't be listed stays as one URL
+        # so its fetch card shows GoFile's reason (private, deleted, …).
+        try:
+            return gofile.expand(url) or [url]
+        except GoFileError:
+            return [url]
     provider_urls = _expand_via_providers(url)
     if provider_urls is not None:
         return provider_urls
@@ -2847,7 +2947,8 @@ def _expand_fetch_urls(urls):
     for index, url in enumerate(roots):
         # Ordinary video URLs take the zero-cost path. Only roots that can do
         # network expansion consume a worker.
-        if "list=" in url or _matching_expander(url) is not None:
+        if ("list=" in url or is_gofile_url(url)
+                or _matching_expander(url) is not None):
             futures[index] = _fetch_expand_executor.submit(_expand_playlist_urls, url)
 
     expanded = []
